@@ -1,0 +1,119 @@
+name: update data (lit-data-abs4)
+
+# Daily Crossref harvest for this lit data shard (ABS 4/4* journals beyond the FT50/UTD24 lists).
+# Adapted from the main repo's lit-ft50-update-data.yml (same hardened commit
+# + live-site check, warn-only here so a not-yet-enabled Pages setup doesn't
+# fail builds). The lit page at stouras.com/fun/lit/ merges this shard's
+# data/sources.json at runtime. See README.md.
+
+on:
+  schedule:
+    - cron: '25 8 * * *'
+  workflow_dispatch: {}      # run on demand from the Actions tab
+  push:
+    # Run once whenever the pipeline or the journal list changes, so a new
+    # journal seeds its data immediately instead of waiting for the schedule.
+    paths:
+      - '.github/workflows/update-data.yml'
+      - '_scraper/build-data.mjs'
+      - '_scraper/informs-editors.mjs'
+      - '_scraper/journals.json'
+
+concurrency:
+  group: update-data-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write            # needed to commit the refreshed data back
+  pages: write               # needed to request a Pages rebuild if a deploy fails
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Verify journal ISSNs against Crossref (warn-only)
+        env:
+          FT50_MAILTO: kstouras@gmail.com
+        run: node _scraper/verify-issns.mjs
+
+      - name: Build data (Crossref, one pull per journal)
+        env:
+          FT50_MAILTO: kstouras@gmail.com   # Crossref "polite pool" contact
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: node _scraper/build-data.mjs
+
+      - name: Commit refreshed data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "No data changes — nothing to commit."
+            exit 0
+          fi
+          git commit -m "refresh shard data"
+          for i in 1 2 3; do
+            if git push origin HEAD:${{ github.ref_name }}; then
+              echo "Pushed on attempt $i."
+              exit 0
+            fi
+            echo "Push rejected (concurrent commit?) — re-committing the data on the new tip…"
+            git fetch origin ${{ github.ref_name }}
+            git reset origin/${{ github.ref_name }}
+            git add data
+            if git diff --cached --quiet; then
+              echo "The concurrent commit already contains this dataset — nothing left to push."
+              exit 0
+            fi
+            git commit -m "refresh shard data"
+            sleep 5
+          done
+          echo "::error::Could not push the refreshed data after 3 attempts."
+          exit 1
+
+      - name: Verify the live shard serves this dataset (warn-only self-heal)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIVE_META: https://www.stouras.com/lit-data-abs4/data/meta.json
+        run: |
+          want=$(jq -r .lastPull data/meta.json)
+          echo "Committed dataset lastPull: $want"
+          poll() {
+            for i in $(seq 1 "$1"); do
+              live=$(curl -sf --max-time 20 "$LIVE_META?nc=${GITHUB_RUN_ID}-${RANDOM}" | jq -r .lastPull || echo "unreachable")
+              echo "  try $i/$1: live lastPull = $live"
+              if [ "$live" != "unreachable" ] && [ ! "$live" \< "$want" ]; then return 0; fi
+              sleep 60
+            done
+            return 1
+          }
+          if poll 5; then echo "Live shard is serving the current dataset."; exit 0; fi
+          echo "Live shard still stale — requesting a GitHub Pages rebuild..."
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pages/builds" \
+            || echo "WARNING: Pages rebuild request failed."
+          if poll 5; then echo "Live shard recovered after the rebuild request."; exit 0; fi
+          echo "::warning::Live shard is still stale or Pages is not enabled yet (Settings → Pages → Deploy from a branch → main / root)."
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### lit-data-abs4 data build" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f data/meta.json ]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat data/meta.json >> "$GITHUB_STEP_SUMMARY"
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi

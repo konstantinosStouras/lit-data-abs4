@@ -1,0 +1,360 @@
+[
+  {
+    "key": "jeconom",
+    "name": "Journal of Econometrics",
+    "short": "J. Econometrics",
+    "issns": [
+      "0304-4076"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jet",
+    "name": "Journal of Economic Theory",
+    "short": "JET",
+    "issns": [
+      "0022-0531"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "rand",
+    "name": "The RAND Journal of Economics",
+    "short": "RAND",
+    "issns": [
+      "0741-6261",
+      "1756-2171"
+    ],
+    "publisher": "Wiley",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jole",
+    "name": "Journal of Labor Economics",
+    "short": "JOLE",
+    "issns": [
+      "0734-306X",
+      "1537-5307"
+    ],
+    "publisher": "University of Chicago Press",
+    "abs": "4"
+  },
+  {
+    "key": "jme",
+    "name": "Journal of Monetary Economics",
+    "short": "JME",
+    "issns": [
+      "0304-3932"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jpube",
+    "name": "Journal of Public Economics",
+    "short": "J. Public Econ",
+    "issns": [
+      "0047-2727"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "ier",
+    "name": "International Economic Review",
+    "short": "IER",
+    "issns": [
+      "0020-6598",
+      "1468-2354"
+    ],
+    "publisher": "Wiley",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "ej",
+    "name": "The Economic Journal",
+    "short": "Economic Journal",
+    "issns": [
+      "0013-0133",
+      "1468-0297"
+    ],
+    "publisher": "Oxford University Press",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jeea",
+    "name": "Journal of the European Economic Association",
+    "short": "JEEA",
+    "issns": [
+      "1542-4766",
+      "1542-4774"
+    ],
+    "publisher": "Oxford University Press",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "restat",
+    "name": "The Review of Economics and Statistics",
+    "short": "REStat",
+    "issns": [
+      "0034-6535",
+      "1530-9142"
+    ],
+    "publisher": "MIT Press",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jhr",
+    "name": "Journal of Human Resources",
+    "short": "JHR",
+    "issns": [
+      "0022-166X",
+      "1548-8004"
+    ],
+    "publisher": "University of Wisconsin Press",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "ijopm",
+    "name": "International Journal of Operations & Production Management",
+    "short": "IJOPM",
+    "issns": [
+      "0144-3577"
+    ],
+    "publisher": "Emerald",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "trsc",
+    "name": "Transportation Science",
+    "short": "Transp. Science",
+    "issns": [
+      "0041-1655",
+      "1526-5447"
+    ],
+    "publisher": "INFORMS",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "trb",
+    "name": "Transportation Research Part B: Methodological",
+    "short": "Transp. Res. B",
+    "issns": [
+      "0191-2615"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jscm",
+    "name": "Journal of Supply Chain Management",
+    "short": "JSCM",
+    "issns": [
+      "1523-2409",
+      "1745-493X"
+    ],
+    "publisher": "Wiley",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "ejis",
+    "name": "European Journal of Information Systems",
+    "short": "EJIS",
+    "issns": [
+      "0960-085X",
+      "1476-9344"
+    ],
+    "publisher": "Taylor & Francis",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jsis",
+    "name": "The Journal of Strategic Information Systems",
+    "short": "JSIS",
+    "issns": [
+      "0963-8687"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jinfotech",
+    "name": "Journal of Information Technology",
+    "short": "JIT",
+    "issns": [
+      "0268-3962",
+      "1466-4437"
+    ],
+    "publisher": "SAGE",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "ijrm",
+    "name": "International Journal of Research in Marketing",
+    "short": "IJRM",
+    "issns": [
+      "0167-8116"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jretail",
+    "name": "Journal of Retailing",
+    "short": "J. Retailing",
+    "issns": [
+      "0022-4359"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jservres",
+    "name": "Journal of Service Research",
+    "short": "JSR",
+    "issns": [
+      "1094-6705",
+      "1552-7379"
+    ],
+    "publisher": "SAGE",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "bjm",
+    "name": "British Journal of Management",
+    "short": "BJM",
+    "issns": [
+      "1045-3172",
+      "1467-8551"
+    ],
+    "publisher": "Wiley",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "humrel",
+    "name": "Human Relations",
+    "short": "Human Relations",
+    "issns": [
+      "0018-7267",
+      "1741-282X"
+    ],
+    "publisher": "SAGE",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "orgstud",
+    "name": "Organization Studies",
+    "short": "Org. Studies",
+    "issns": [
+      "0170-8406",
+      "1741-3044"
+    ],
+    "publisher": "SAGE",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "job",
+    "name": "Journal of Organizational Behavior",
+    "short": "JOB",
+    "issns": [
+      "0894-3796",
+      "1099-1379"
+    ],
+    "publisher": "Wiley",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "lq",
+    "name": "The Leadership Quarterly",
+    "short": "Leadership Q.",
+    "issns": [
+      "1048-9843"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jwb",
+    "name": "Journal of World Business",
+    "short": "JWB",
+    "issns": [
+      "1090-9516"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "wes",
+    "name": "Work, Employment and Society",
+    "short": "WES",
+    "issns": [
+      "0950-0170",
+      "1469-8722"
+    ],
+    "publisher": "SAGE",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jpim",
+    "name": "Journal of Product Innovation Management",
+    "short": "JPIM",
+    "issns": [
+      "0737-6782",
+      "1540-5885"
+    ],
+    "publisher": "Wiley",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jcf",
+    "name": "Journal of Corporate Finance",
+    "short": "JCF",
+    "issns": [
+      "0929-1199"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jfinterm",
+    "name": "Journal of Financial Intermediation",
+    "short": "JFI",
+    "issns": [
+      "1042-9573"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  }
+]
