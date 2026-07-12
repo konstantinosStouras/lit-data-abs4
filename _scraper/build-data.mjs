@@ -467,18 +467,47 @@ async function pullJournal(src) {
 // queries DOIs it has not resolved before. Non-fatal end to end: a lookup that
 // fails just leaves that paper without a link.
 
+// Canonical arXiv landing URL: strip any pinned version suffix (v2) and any
+// .pdf tail so the link always resolves to the LATEST version of the paper.
+export function canonArxiv(u) {
+  const m = String(u || '').match(/^https?:\/\/(?:www\.|export\.)?arxiv\.org\/(?:abs|pdf)\/([^?#]+)/i);
+  if (!m) return u;
+  const id = m[1].replace(/\.pdf$/i, '').replace(/v\d+$/i, '');
+  return `https://arxiv.org/abs/${id}`;
+}
+
+// Cached finds may predate the latest-version canonicalisation — normalise on
+// every apply so rows always carry the canonical (latest-version) URL.
+export function canonPreprint(u) { return canonArxiv(u); }
+
 export function pickPreprint(cands) {
   // http(s) only, and matched on the real hostname (not a substring) so a
-  // spoofed host like arxiv.org.evil.com cannot slip into the href. arXiv wins
-  // over SSRN (the paper asked for "SSRN or arXiv"; arXiv links are stabler).
+  // spoofed host like arxiv.org.evil.com cannot slip into the href. Preference
+  // order: arXiv > SSRN (the hosts the paper asked for; arXiv links are
+  // stabler) > bioRxiv/medRxiv > NBER > OSF (the broader repositories).
   const host = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
-  const isArxiv = (h) => h === 'arxiv.org' || h.endsWith('.arxiv.org');
-  const isSsrn = (h) => h === 'ssrn.com' || h.endsWith('.ssrn.com');
+  const isHost = (h, d) => h === d || h.endsWith('.' + d);
   const list = cands.filter(u => u && /^https?:\/\//i.test(u));
-  const arx = list.find(u => isArxiv(host(u)));
-  if (arx) return { u: arx, s: 'arxiv' };
-  const ssrn = list.find(u => isSsrn(host(u)));
+  const find = (d) => list.find(u => isHost(host(u), d));
+  const arx = find('arxiv.org');
+  if (arx) return { u: canonArxiv(arx), s: 'arxiv' };
+  const ssrn = find('ssrn.com');
   if (ssrn) return { u: ssrn, s: 'ssrn' };
+  const bio = find('biorxiv.org');
+  if (bio) return { u: bio, s: 'biorxiv' };
+  const med = find('medrxiv.org');
+  if (med) return { u: med, s: 'medrxiv' };
+  // NBER: accept both the landing (/papers/wN) and the direct-PDF
+  // (/system/files/working_papers/wN/wN.pdf) forms — OpenAlex often supplies
+  // only the latter — and canonicalise to the stable landing URL.
+  const nber = list.find(u => isHost(host(u), 'nber.org') &&
+    /\/(?:papers|system\/files\/working_papers)\/w\d+/i.test(u));
+  if (nber) return { u: `https://www.nber.org/papers/${nber.match(/\/(w\d+)/i)[1].toLowerCase()}`, s: 'nber' };
+  // OSF: only the preprint server's own pages (osf.io/preprints/...) — a bare
+  // osf.io guid is just as often a project or registration, not a pre-print
+  // (those still arrive via the 10.31219 OSF-preprint DOI in preprintFromDoi).
+  const osf = list.find(u => isHost(host(u), 'osf.io') && /\/preprints\//i.test(u));
+  if (osf) return { u: osf, s: 'osf' };
   return null;
 }
 
@@ -488,7 +517,18 @@ export function preprintFromDoi(doi) {
   let m = d.match(/^10\.2139\/ssrn\.(\d+)$/);        // SSRN
   if (m) return { u: `https://papers.ssrn.com/sol3/papers.cfm?abstract_id=${m[1]}`, s: 'ssrn' };
   m = d.match(/^10\.48550\/arxiv\.(.+)$/);           // arXiv (DataCite DOI)
-  if (m) return { u: `https://arxiv.org/abs/${m[1]}`, s: 'arxiv' };
+  if (m) return { u: `https://arxiv.org/abs/${m[1].replace(/v\d+$/i, '')}`, s: 'arxiv' };
+  // bioRxiv/medRxiv preprint DOIs only: date-coded (2023.01.02.522345) or
+  // legacy numeric (121212). The same 10.1101 prefix also covers CSHL Press
+  // JOURNALS (gr.*, gad.*, cshperspect.*, pdb.*) — paywalled articles that
+  // must never be surfaced as an open-access pre-print. The DOI alone can't
+  // say WHICH rxiv hosts it, so the source is the neutral 'cshl'.
+  m = d.match(/^10\.1101\/((?:\d{4}\.\d{2}\.\d{2}\.)?\d+)$/);
+  if (m) return { u: `https://doi.org/10.1101/${m[1]}`, s: 'cshl' };
+  m = d.match(/^10\.3386\/(w\d+)$/i);                // NBER working paper
+  if (m) return { u: `https://www.nber.org/papers/${m[1].toLowerCase()}`, s: 'nber' };
+  m = d.match(/^10\.31219\/osf\.io\/(\w+)$/);        // OSF preprint
+  if (m) return { u: `https://osf.io/${m[1]}`, s: 'osf' };
   return null;
 }
 
@@ -524,9 +564,15 @@ export function matchPreprintWork(paper, results) {
   for (const w of results || []) {
     if (matchNorm(w.title || '') !== nt) continue;
     const wn = lastNames((w.authorships || []).map(a => (a.author && a.author.display_name) || ''));
-    let shared = false;
-    for (const x of wn) if (mine.has(x)) { shared = true; break; }
-    if (!shared) continue;
+    // Double-check the authors, not just one of them: require two shared
+    // surnames whenever both records list two or more authors (a single
+    // shared surname suffices only for single-author records) — an exact
+    // title alone ("Introduction", "Repeated Games") is no proof of identity.
+    if (!mine.size || !wn.size) continue;
+    const need = Math.min(2, mine.size, wn.size);
+    let shared = 0;
+    for (const x of wn) if (mine.has(x)) shared++;
+    if (shared < need) continue;
     const wy = parseInt(w.publication_year, 10);
     if (py && wy && (wy > py + 1 || wy < py - 12)) continue; // a preprint precedes publication
     const urls = [];
@@ -616,9 +662,18 @@ async function oaGet(url) {
   }
 }
 
+// Search-pass version. Bump whenever the matcher or the host coverage
+// expands: cache entries searched under an older version become eligible
+// again, so earlier misses are retried with the wider net (never-searched
+// papers still go first — see the eligibility sort). v2: bioRxiv/medRxiv/
+// NBER/OSF hosts, two-surname author check, year floor 1991 (arXiv's first
+// year, instead of 2005).
+export const TS_VER = 2;
+
 // Find each unlinked paper's arXiv/SSRN pre-print via an OpenAlex title.search,
 // matched conservatively by matchPreprintWork. Cache entries become {u,s}
-// (found) or {none:1,ts:1} (searched, nothing); an errored lookup is left
+// (found) or {none:1,ts:TS_VER} (searched, nothing — re-eligible whenever
+// TS_VER is bumped); an errored lookup is left
 // without `ts` so a later run retries it. Bounded by `cap` and, when given, a
 // wall-clock `budgetMs`. Throttling (429/403) is handled two ways:
 //   - default (the daily build): back off briefly, and STOP for this run after
@@ -633,9 +688,11 @@ export async function searchPreprintsByTitle(papers, cache, opts = {}) {
   const maxThrottle = opts.patient ? 25 : (opts.maxThrottle || 6);
   const deadline = opts.budgetMs ? Date.now() + opts.budgetMs : Infinity;
   const eligible = papers
-    .filter(p => p._doi && cache[p._doi] && cache[p._doi].none && !cache[p._doi].ts &&
-                 p.JKey !== 'pnas' && parseInt(p.Year, 10) >= 2005)
-    .sort((a, b) => (parseInt(b.Year, 10) || 0) - (parseInt(a.Year, 10) || 0));
+    .filter(p => p._doi && cache[p._doi] && cache[p._doi].none &&
+                 (cache[p._doi].ts || 0) < TS_VER && parseInt(p.Year, 10) >= 1991)
+    .sort((a, b) =>
+      ((cache[a._doi].ts ? 1 : 0) - (cache[b._doi].ts ? 1 : 0)) ||
+      ((parseInt(b.Year, 10) || 0) - (parseInt(a.Year, 10) || 0)));
   const todo = eligible.slice(0, cap);
   if (opts.log) console.log(`  preprints: title-searching up to ${todo.length} of ${eligible.length} unlinked papers…`);
   let found = 0, searched = 0, throttled = 0;
@@ -643,7 +700,7 @@ export async function searchPreprintsByTitle(papers, cache, opts = {}) {
     const p = todo[i];
     if (Date.now() > deadline) { if (opts.log) console.log('  preprints: title-search time budget reached — resuming next run.'); break; }
     const q = String(p.Title || '').replace(/[^\w\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!q) { cache[p._doi] = { none: 1, ts: 1 }; continue; }
+    if (!q) { cache[p._doi] = { none: 1, ts: TS_VER }; continue; }
     const url = 'https://api.openalex.org/works?filter=title.search:' + encodeURIComponent(q) +
       '&per-page=10&select=doi,title,publication_year,authorships,best_oa_location,primary_location,locations' +
       `&mailto=${encodeURIComponent(MAILTO)}`;
@@ -651,7 +708,7 @@ export async function searchPreprintsByTitle(papers, cache, opts = {}) {
     if (r.ok) {
       throttled = 0; searched++;
       const pick = matchPreprintWork({ title: p.Title, year: p.Year, authors: p.Authors }, (r.json && r.json.results) || []);
-      cache[p._doi] = pick || { none: 1, ts: 1 };
+      cache[p._doi] = pick || { none: 1, ts: TS_VER };
       if (pick) found++;
       if (opts.log && searched % 500 === 0) console.log(`  preprints: …${searched} searched, ${found} linked so far`);
       // Periodic save so a long local run can be interrupted without losing work.
@@ -693,7 +750,7 @@ function applyPreprints(allPapers, cache) {
   let n = 0;
   for (const p of allPapers) {
     const x = p._doi && cache[p._doi];
-    if (x && x.u) { p.Preprint = x.u; p.PreprintSrc = x.s; n++; }
+    if (x && x.u) { p.Preprint = canonPreprint(x.u); p.PreprintSrc = x.s; n++; }
   }
   console.log(`  preprints: ${n}/${allPapers.length} papers link to an arXiv/SSRN pre-print`);
 }

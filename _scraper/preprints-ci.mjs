@@ -5,7 +5,7 @@
  * title-search, straight from the committed dataset — adapted from
  * fun/lit/_scraper/preprints-ci.mjs (see that header for the full story).
  * Driven by .github/workflows/preprints-backfill.yml, which runs it a few times a day and commits the
- * refreshed data back. Newest papers are searched first.
+ * refreshed data back. Never-searched papers go first, newest first within each class.
  *
  * Each run is bounded (FT50_PREPRINT_BACKFILL_MS, default 25 min of
  * searching) and quota-aware: OpenAlex rate-limits are waited out politely,
@@ -28,7 +28,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { searchPreprintsByTitle } from './build-data.mjs';
+import { canonPreprint, searchPreprintsByTitle, TS_VER } from './build-data.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA = process.env.FT50_DATA_DIR || join(__dirname, '..', 'data');
@@ -84,7 +84,7 @@ if (!applyOnly) {
   const found = await searchPreprintsByTitle(all, cache, {
     cap: parseInt(process.env.FT50_PREPRINT_BACKFILL_CAP || '100000', 10),
     budgetMs: parseInt(process.env.FT50_PREPRINT_BACKFILL_MS || String(25 * 60 * 1000), 10),
-    sleepMs: 300,
+    sleepMs: 400,   // gently: ~2 req/s, well under OpenAlex's ceiling
     patient: true,
     log: true,
     checkpoint: (c) => writeFile(join(DATA, '_preprints.json'), JSON.stringify(c), 'utf8'),
@@ -97,7 +97,7 @@ let withLink = 0;
 for (const [key, rows] of Object.entries(filesByKey)) {
   for (const r of rows) {
     const x = cache[r._doi];
-    if (x && x.u) { r.Preprint = x.u; r.PreprintSrc = x.s; withLink++; }
+    if (x && x.u) { r.Preprint = canonPreprint(x.u); r.PreprintSrc = x.s; withLink++; }
     delete r._doi;
   }
   const s = sources.find(x => x.key === key);
@@ -108,6 +108,6 @@ await writeFile(join(DATA, '_preprints.json'), JSON.stringify(cache), 'utf8');
 const remaining = all.filter(p => {
   const doi = (p.DOI || '').replace(/^https?:\/\/doi\.org\//i, '').toLowerCase();
   const c = cache[doi];
-  return doi && c && c.none && !c.ts && parseInt(p.Year, 10) >= 2005;
+  return doi && c && c.none && (c.ts || 0) < TS_VER && parseInt(p.Year, 10) >= 1991;
 }).length;
 console.log(`${withLink} papers carry a pre-print link; backlog remaining: ${remaining}`);
