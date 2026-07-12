@@ -363,10 +363,7 @@
     ],
     "publisher": "Wiley",
     "abs": "4",
-    "aia": true,
-    "retired": true,
-    "retiredDate": "2026-07-12",
-    "retiredReason": "out of scope: ABS coverage is limited to Operations/SCM/Economics/CS-related journals"
+    "aia": true
   },
   {
     "key": "jcf",

@@ -1,7 +1,7 @@
 # Candidates for this shard — grade needs confirmation on journalranking.org
 
-SCOPE: only Operations / Supply Chain / Economics / Computer Science-related
-ABS 4/4* journals belong here (FT50/UTD24 are covered in full by the main
+SCOPE: only Operations / Supply Chain / Economics / Computer Science /
+Project Management / Innovation-related ABS 4/4* journals belong here (FT50/UTD24 are covered in full by the main
 catalog; other fields' ABS journals are deliberately out of scope). Confirm
 each candidate's grade on https://journalranking.org/ before adding — append
 a `journals.json` entry with the verified `"abs"` grade and push.
