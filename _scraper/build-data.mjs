@@ -459,6 +459,245 @@ async function pullJournal(src) {
   return fresh;
 }
 
+// ── Pre-print (arXiv/SSRN) open-access links, for every source ──────────────
+// Any paper with a free author pre-print on arXiv or SSRN gets a `Preprint`
+// URL (+ `PreprintSrc`), surfaced on the card as an open-access link. Resolved
+// from OpenAlex by DOI — batched exactly like enrichEc — and cached in
+// the dataset dir’s _preprints.json (doi -> {u,s} | {none:1}) so the daily build only
+// queries DOIs it has not resolved before. Non-fatal end to end: a lookup that
+// fails just leaves that paper without a link.
+
+export function pickPreprint(cands) {
+  // http(s) only, and matched on the real hostname (not a substring) so a
+  // spoofed host like arxiv.org.evil.com cannot slip into the href. arXiv wins
+  // over SSRN (the paper asked for "SSRN or arXiv"; arXiv links are stabler).
+  const host = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
+  const isArxiv = (h) => h === 'arxiv.org' || h.endsWith('.arxiv.org');
+  const isSsrn = (h) => h === 'ssrn.com' || h.endsWith('.ssrn.com');
+  const list = cands.filter(u => u && /^https?:\/\//i.test(u));
+  const arx = list.find(u => isArxiv(host(u)));
+  if (arx) return { u: arx, s: 'arxiv' };
+  const ssrn = list.find(u => isSsrn(host(u)));
+  if (ssrn) return { u: ssrn, s: 'ssrn' };
+  return null;
+}
+
+// An SSRN/arXiv preprint record has its own DOI; turn it into a landing URL.
+export function preprintFromDoi(doi) {
+  const d = String(doi || '').replace(/^https?:\/\/doi\.org\//i, '').toLowerCase();
+  let m = d.match(/^10\.2139\/ssrn\.(\d+)$/);        // SSRN
+  if (m) return { u: `https://papers.ssrn.com/sol3/papers.cfm?abstract_id=${m[1]}`, s: 'ssrn' };
+  m = d.match(/^10\.48550\/arxiv\.(.+)$/);           // arXiv (DataCite DOI)
+  if (m) return { u: `https://arxiv.org/abs/${m[1]}`, s: 'arxiv' };
+  return null;
+}
+
+// Normalized last-name tokens from "First Last" name strings.
+function lastNames(names) {
+  const out = new Set();
+  for (const n of names) {
+    const toks = String(n || '').trim().split(/\s+/);
+    const norm = (toks[toks.length - 1] || '').toLowerCase()
+      .normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z]/g, '');
+    if (norm.length >= 2) out.add(norm);
+  }
+  return out;
+}
+
+// Fully-collapsing title norm for preprint matching, same shape as the
+// reference pipeline's (fun/lit/_scraper) ec-pages normTitle: lowercase, NFD
+// accent-fold, then strip ALL non-alphanumerics so 'Trade-offs' == 'Tradeoffs'.
+// Deliberately NOT this file's registry normTitle, which keeps word gaps.
+const matchNorm = (s) => String(s || '').toLowerCase()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '');
+
+// Among OpenAlex title-search results, find the SAME paper's arXiv/SSRN
+// preprint record. Conservative on purpose (a wrong link is worse than none):
+// requires an exact normalized-title match, a shared author surname, and a
+// plausible year, and only accepts an arXiv/SSRN-hosted location or preprint
+// DOI. Pure → unit-tested.
+export function matchPreprintWork(paper, results) {
+  const nt = matchNorm(paper.title || '');
+  if (!nt) return null;
+  const py = parseInt(paper.year, 10);
+  const mine = lastNames(String(paper.authors || '').split(','));
+  for (const w of results || []) {
+    if (matchNorm(w.title || '') !== nt) continue;
+    const wn = lastNames((w.authorships || []).map(a => (a.author && a.author.display_name) || ''));
+    let shared = false;
+    for (const x of wn) if (mine.has(x)) { shared = true; break; }
+    if (!shared) continue;
+    const wy = parseInt(w.publication_year, 10);
+    if (py && wy && (wy > py + 1 || wy < py - 12)) continue; // a preprint precedes publication
+    const urls = [];
+    for (const loc of w.locations || []) if (loc) urls.push(loc.landing_page_url, loc.pdf_url);
+    if (w.best_oa_location) urls.push(w.best_oa_location.landing_page_url, w.best_oa_location.pdf_url);
+    if (w.primary_location) urls.push(w.primary_location.landing_page_url, w.primary_location.pdf_url);
+    const pick = pickPreprint(urls) || preprintFromDoi(w.doi);
+    if (pick) return pick;
+  }
+  return null;
+}
+
+async function resolvePreprints(allPapers, cache) {
+  // 1. Seed from links we already resolved (EC's PDF is arXiv/SSRN/OA), so we
+  //    never spend an OpenAlex call on a paper we can already answer.
+  for (const p of allPapers) {
+    if (!p._doi || cache[p._doi]) continue;
+    const pick = pickPreprint([p.PDF]);
+    if (pick) cache[p._doi] = pick;
+  }
+  if (MOCK) return; // offline: no OpenAlex; the seed above still applies.
+
+  // 2. OpenAlex, batched 50 DOIs per request (same shape as enrichEc).
+  const seen = new Set(), need = [];
+  for (const p of allPapers) {
+    if (!p._doi || cache[p._doi] || seen.has(p._doi)) continue;
+    seen.add(p._doi); need.push(p._doi);
+  }
+  console.log(`  preprints: resolving ${need.length} DOIs via OpenAlex…`);
+  for (let i = 0; i < need.length; i += 50) {
+    const batch = need.slice(i, i + 50);
+    const url = 'https://api.openalex.org/works?filter=doi:' + batch.join('|') +
+      '&per-page=50&select=doi,open_access,best_oa_location,locations' +
+      `&mailto=${encodeURIComponent(MAILTO)}`;
+    try {
+      const j = await fetchJson(url);
+      const byDoi = new Map();
+      for (const w of j.results || []) {
+        byDoi.set(String(w.doi || '').replace(/^https?:\/\/doi\.org\//i, '').toLowerCase(), w);
+      }
+      for (const doi of batch) {
+        const w = byDoi.get(doi);
+        if (!w) { cache[doi] = { none: 1 }; continue; }
+        const cands = (w.locations || []).flatMap(l => [l && l.landing_page_url, l && l.pdf_url]);
+        cands.push(w.best_oa_location && w.best_oa_location.landing_page_url,
+                   w.best_oa_location && w.best_oa_location.pdf_url,
+                   w.open_access && w.open_access.oa_url);
+        cache[doi] = pickPreprint(cands) || { none: 1 };
+      }
+    } catch (e) {
+      console.warn('  openalex preprints batch failed (non-fatal):', e.message);
+    }
+    await sleep(400);
+  }
+
+  // 3. Title+author search for papers the by-DOI scan couldn't link — their
+  //    arXiv/SSRN preprint exists as a SEPARATE OpenAlex record (own
+  //    10.2139/ssrn.* DOI). This is what surfaces most SSRN preprints. It is
+  //    strictly TIME-BOUNDED and gentle (see searchPreprintsByTitle) so the
+  //    daily build can never hang if OpenAlex throttles the per-paper query;
+  //    the full backfill runs online via preprints-ci.mjs (own workflow).
+  await searchPreprintsByTitle(allPapers, cache, {
+    cap: parseInt(process.env.FT50_PREPRINT_SEARCH_CAP || '2500', 10),
+    budgetMs: parseInt(process.env.FT50_PREPRINT_SEARCH_MS || '360000', 10), // 6-minute hard ceiling
+    log: true,
+  });
+}
+
+// A single, gentle OpenAlex GET — one attempt with a hard timeout, NO retry
+// stacking. (fetchJson retries 5× with up to 62s of backoff, which is fine for
+// a handful of batched calls but lets a throttled per-paper title search drag
+// on for hours.) Returns {ok, status, retryAfter, json}.
+async function oaGet(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const res = await fetch(url, { headers: { 'User-Agent': `lit-scraper/1.0 (mailto:${MAILTO})` }, signal: ctrl.signal });
+    if (!res.ok) {
+      const ra = parseInt(res.headers.get('retry-after') || '', 10);
+      return { ok: false, status: res.status, retryAfter: isNaN(ra) ? 0 : ra };
+    }
+    return { ok: true, status: 200, json: await res.json() };
+  } catch (e) {
+    return { ok: false, status: 0, retryAfter: 0 };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Find each unlinked paper's arXiv/SSRN pre-print via an OpenAlex title.search,
+// matched conservatively by matchPreprintWork. Cache entries become {u,s}
+// (found) or {none:1,ts:1} (searched, nothing); an errored lookup is left
+// without `ts` so a later run retries it. Bounded by `cap` and, when given, a
+// wall-clock `budgetMs`. Throttling (429/403) is handled two ways:
+//   - default (the daily build): back off briefly, and STOP for this run after
+//     a few consecutive throttles — CI must never sit out a rate-limit.
+//   - opts.patient (preprints-local.mjs): wait it out with escalating backoff
+//     (retry-after honoured, 5s→60s) and RETRY the same paper, because a
+//     personal machine can afford to ride through OpenAlex's rate-limiting.
+// Returns the number newly linked.
+export async function searchPreprintsByTitle(papers, cache, opts = {}) {
+  const cap = opts.cap || 6000;
+  const sleepMs = opts.sleepMs || 130;
+  const maxThrottle = opts.patient ? 25 : (opts.maxThrottle || 6);
+  const deadline = opts.budgetMs ? Date.now() + opts.budgetMs : Infinity;
+  const eligible = papers
+    .filter(p => p._doi && cache[p._doi] && cache[p._doi].none && !cache[p._doi].ts &&
+                 p.JKey !== 'pnas' && parseInt(p.Year, 10) >= 2005)
+    .sort((a, b) => (parseInt(b.Year, 10) || 0) - (parseInt(a.Year, 10) || 0));
+  const todo = eligible.slice(0, cap);
+  if (opts.log) console.log(`  preprints: title-searching up to ${todo.length} of ${eligible.length} unlinked papers…`);
+  let found = 0, searched = 0, throttled = 0;
+  for (let i = 0; i < todo.length; i++) {
+    const p = todo[i];
+    if (Date.now() > deadline) { if (opts.log) console.log('  preprints: title-search time budget reached — resuming next run.'); break; }
+    const q = String(p.Title || '').replace(/[^\w\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!q) { cache[p._doi] = { none: 1, ts: 1 }; continue; }
+    const url = 'https://api.openalex.org/works?filter=title.search:' + encodeURIComponent(q) +
+      '&per-page=10&select=doi,title,publication_year,authorships,best_oa_location,primary_location,locations' +
+      `&mailto=${encodeURIComponent(MAILTO)}`;
+    const r = await oaGet(url);
+    if (r.ok) {
+      throttled = 0; searched++;
+      const pick = matchPreprintWork({ title: p.Title, year: p.Year, authors: p.Authors }, (r.json && r.json.results) || []);
+      cache[p._doi] = pick || { none: 1, ts: 1 };
+      if (pick) found++;
+      if (opts.log && searched % 500 === 0) console.log(`  preprints: …${searched} searched, ${found} linked so far`);
+      // Periodic save so a long local run can be interrupted without losing work.
+      if (opts.checkpoint && searched % 200 === 0) await opts.checkpoint(cache);
+      await sleep(sleepMs);
+    } else if (r.status === 429 || r.status === 403) {
+      throttled++;                                  // leave un-ts so it retries later
+      if (throttled >= maxThrottle) { if (opts.log) console.log('  preprints: OpenAlex throttling — stopping title-search for this run.'); break; }
+      if (opts.patient) {
+        // A Retry-After of minutes is per-second/burst throttling — wait it
+        // out and retry the SAME paper. A Retry-After of HOURS means the
+        // DAILY quota for this mailto/IP is spent: sleeping on it would just
+        // hang the terminal, so save progress and exit with a clear message.
+        const quotaMs = opts.maxWaitMs || 15 * 60 * 1000;
+        if (r.retryAfter * 1000 > quotaMs) {
+          const h = Math.floor(r.retryAfter / 3600), m = Math.round((r.retryAfter % 3600) / 60);
+          const at = new Date(Date.now() + r.retryAfter * 1000).toISOString().slice(11, 16);
+          if (opts.log) console.log(
+            `  preprints: OpenAlex says the daily request quota is spent — it resets in ~${h}h ${m}m (${at} UTC).\n` +
+            `  Progress is saved; simply re-run this script after that time (or with a different FT50_MAILTO).`);
+          break;
+        }
+        const wait = Math.max(r.retryAfter * 1000, Math.min(5000 * Math.pow(2, throttled - 1), 60000));
+        if (opts.log) console.log(`  preprints: rate-limited — waiting ${Math.round(wait / 1000)}s…`);
+        await sleep(wait);
+        i--;
+      } else {
+        await sleep(Math.min(Math.max(r.retryAfter, 2) * 1000, 10000));
+      }
+    } else {
+      await sleep(500);                             // transient error: brief pause, keep going
+    }
+  }
+  if (opts.log) console.log(`  preprints: title search linked ${found} more (searched ${searched}).`);
+  return found;
+}
+
+function applyPreprints(allPapers, cache) {
+  let n = 0;
+  for (const p of allPapers) {
+    const x = p._doi && cache[p._doi];
+    if (x && x.u) { p.Preprint = x.u; p.PreprintSrc = x.s; n++; }
+  }
+  console.log(`  preprints: ${n}/${allPapers.length} papers link to an arXiv/SSRN pre-print`);
+}
+
 // ── Registry (key -> first-seen date) ──────────────────────────────────────
 
 async function loadRegistry() {
@@ -707,6 +946,17 @@ async function main() {
     bySource[src.key].sort((a, b) => (b._rank - a._rank) || cmp(regKey(a), regKey(b)));
   }
   const allPapers = LOCAL_JOURNALS.flatMap(s => bySource[s.key]);
+
+  // Pre-print (arXiv/SSRN) open-access links — cached + incremental, exactly
+  // like the fun/lit native pipeline. Kept non-fatal so a slow/failed OpenAlex
+  // run never aborts the data build; the cache we already have still applies.
+  // The heavy title-search backfill runs in its own scheduled workflow via
+  // preprints-ci.mjs; the in-build pass here is strictly time-boxed.
+  const preprintCache = await loadJsonIfExists(join(DATA_DIR, '_preprints.json'), {});
+  try { await resolvePreprints(allPapers, preprintCache); }
+  catch (e) { console.warn('  preprints resolve failed (non-fatal):', e.message); }
+  if (!MOCK) await writeJson('_preprints.json', preprintCache);
+  applyPreprints(allPapers, preprintCache);
 
   const reg = await loadRegistry();
   const registry = updateRegistry(bySource, reg);

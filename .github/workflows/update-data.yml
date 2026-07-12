@@ -42,12 +42,12 @@ jobs:
 
       - name: Verify journal ISSNs against Crossref (warn-only)
         env:
-          FT50_MAILTO: kstouras@gmail.com
+          FT50_MAILTO: kstouras+abs4@gmail.com
         run: node _scraper/verify-issns.mjs
 
       - name: Build data (Crossref, one pull per journal)
         env:
-          FT50_MAILTO: kstouras@gmail.com   # Crossref "polite pool" contact
+          FT50_MAILTO: kstouras+abs4@gmail.com   # Crossref "polite pool" contact
           NODE_OPTIONS: --max-old-space-size=6144
         run: node _scraper/build-data.mjs
 

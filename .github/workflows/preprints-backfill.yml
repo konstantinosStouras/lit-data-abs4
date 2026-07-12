@@ -1,0 +1,80 @@
+name: backfill pre-print links (lit-data-abs4)
+
+# Incrementally links arXiv/SSRN pre-prints for this shard's papers by running
+# _scraper/preprints-ci.mjs a few times a day: each run does a bounded
+# (~25 min), quota-aware slice of OpenAlex title-searches and commits the
+# refreshed data/ back. The first-deploy backlog clears over some days; after
+# that each run is a cheap near-no-op that covers newly added papers. Adapted
+# from the main repo's lit-preprints-backfill.yml — see preprints-ci.mjs.
+
+on:
+  schedule:
+    # Four slices a day, offset from the 08:25 daily data build. This shard
+    # has its own OpenAlex quota identity (FT50_MAILTO below), so parallel
+    # backfills across the lit datasets never starve each other.
+    - cron: '35 1,7,13,19 * * *'
+  workflow_dispatch: {}      # run on demand from the Actions tab
+
+# SAME concurrency group as update-data.yml — both workflows commit data/,
+# so they must queue behind each other, never race.
+concurrency:
+  group: update-data-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write            # needed to commit the refreshed data back
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50      # hard backstop: search budget is 25 min + apply/commit
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Backfill pre-print links (OpenAlex title-search, bounded)
+        env:
+          FT50_MAILTO: kstouras+abs4@gmail.com   # this shard's own OpenAlex quota identity
+        run: node _scraper/preprints-ci.mjs
+
+      - name: Commit refreshed data
+        if: github.ref == 'refs/heads/main'
+        # Hardened push with one twist vs update-data.yml: on a rejected push
+        # this run's tree may be STALER than what landed (e.g. a daily refresh
+        # with new papers), so instead of re-committing our tree we take the
+        # new tip's data and re-apply ONLY our cache finds onto it
+        # (preprints-ci.mjs --apply-only --merge-cache).
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "No data changes — nothing to commit."
+            exit 0
+          fi
+          cp data/_preprints.json /tmp/shard-preprints-ours.json
+          git commit -m "backfill pre-print links"
+          for i in 1 2 3; do
+            if git push origin HEAD:${{ github.ref_name }}; then
+              echo "Pushed on attempt $i."
+              exit 0
+            fi
+            echo "Push rejected (concurrent commit?) — re-applying our finds on the new tip…"
+            git fetch origin ${{ github.ref_name }}
+            git reset --hard origin/${{ github.ref_name }}
+            node _scraper/preprints-ci.mjs --apply-only --merge-cache=/tmp/shard-preprints-ours.json
+            git add data
+            if git diff --cached --quiet; then
+              echo "The concurrent commit already contains these links — nothing left to push."
+              exit 0
+            fi
+            git commit -m "backfill pre-print links"
+            sleep 5
+          done
+          echo "::error::Could not push the backfilled data after 3 attempts."
+          exit 1
