@@ -63,8 +63,9 @@
       "0047-2727"
     ],
     "publisher": "Elsevier",
-    "abs": "4",
-    "aia": true
+    "abs": "3",
+    "aia": true,
+    "note": "AJG2024 grade is 3 (was recorded 4) per journalranking.org; regraded to 3. Data already harvested in this shard, so retained here rather than re-harvested in lit-data-abs3-omecon."
   },
   {
     "key": "ier",
@@ -123,8 +124,9 @@
       "1548-8004"
     ],
     "publisher": "University of Wisconsin Press",
-    "abs": "4",
-    "aia": true
+    "abs": "3",
+    "aia": true,
+    "note": "AJG2024 grade is 3 (was recorded 4) per journalranking.org; regraded to 3. Data already harvested in this shard, so retained here rather than re-harvested in lit-data-abs3-omecon."
   },
   {
     "key": "ijopm",
@@ -146,8 +148,9 @@
       "1526-5447"
     ],
     "publisher": "INFORMS",
-    "abs": "4",
-    "aia": true
+    "abs": "3",
+    "aia": true,
+    "note": "AJG2024 grade is 3 (was recorded 4) per journalranking.org; regraded to 3. Data already harvested in this shard, so retained here rather than re-harvested in lit-data-abs3-omecon."
   },
   {
     "key": "trb",
@@ -392,5 +395,44 @@
     "retired": true,
     "retiredDate": "2026-07-12",
     "retiredReason": "out of scope: ABS coverage is limited to Operations/SCM/Economics/CS-related journals"
+  },
+  {
+    "key": "aejapp",
+    "name": "American Economic Journal: Applied Economics",
+    "short": "AEJ: Applied",
+    "issns": [
+      "1945-7782",
+      "1945-7790"
+    ],
+    "publisher": "American Economic Association",
+    "abs": "4",
+    "aia": true,
+    "addedBy": "abs-2024-sync (journalranking.org AJG2024)"
+  },
+  {
+    "key": "aejmac",
+    "name": "American Economic Journal: Macroeconomics",
+    "short": "AEJ: Macro",
+    "issns": [
+      "1945-7707",
+      "1945-7715"
+    ],
+    "publisher": "American Economic Association",
+    "abs": "4",
+    "aia": true,
+    "addedBy": "abs-2024-sync (journalranking.org AJG2024)"
+  },
+  {
+    "key": "isj",
+    "name": "Information Systems Journal",
+    "short": "ISJ",
+    "issns": [
+      "1350-1917",
+      "1365-2575"
+    ],
+    "publisher": "Wiley",
+    "abs": "4",
+    "aia": true,
+    "addedBy": "abs-2024-sync (journalranking.org AJG2024)"
   }
 ]
