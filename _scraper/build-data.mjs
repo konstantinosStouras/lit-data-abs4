@@ -553,8 +553,8 @@ const matchNorm = (s) => String(s || '').toLowerCase()
 
 // Among OpenAlex title-search results, find the SAME paper's arXiv/SSRN
 // preprint record. Conservative on purpose (a wrong link is worse than none):
-// requires an exact normalized-title match, a shared author surname, and a
-// plausible year, and only accepts an arXiv/SSRN-hosted location or preprint
+// requires an exact-or-prefix title match (titlesMatch), two shared author
+// surnames (one for single-author records), a plausible year, and only accepts an arXiv/SSRN-hosted location or preprint
 // DOI. Pure → unit-tested.
 export function matchPreprintWork(paper, results) {
   const nt = matchNorm(paper.title || '');
@@ -562,7 +562,8 @@ export function matchPreprintWork(paper, results) {
   const py = parseInt(paper.year, 10);
   const mine = lastNames(String(paper.authors || '').split(','));
   for (const w of results || []) {
-    if (matchNorm(w.title || '') !== nt) continue;
+    const tmw = titlesMatch(nt, matchNorm(w.title || ''));
+    if (!tmw) continue;
     const wn = lastNames((w.authorships || []).map(a => (a.author && a.author.display_name) || ''));
     // Double-check the authors, not just one of them: require two shared
     // surnames whenever both records list two or more authors (a single
@@ -574,7 +575,9 @@ export function matchPreprintWork(paper, results) {
     for (const x of wn) if (mine.has(x)) shared++;
     if (shared < need) continue;
     const wy = parseInt(w.publication_year, 10);
-    if (py && wy && (wy > py + 1 || wy < py - 12)) continue; // a preprint precedes publication
+    // A preprint precedes publication; a PREFIX match must additionally be
+    // near-contemporaneous, or it is likely a same-team title-stem sibling.
+    if (py && wy && (wy > py + 1 || wy < py - (tmw === 'exact' ? 12 : 6))) continue;
     const urls = [];
     for (const loc of w.locations || []) if (loc) urls.push(loc.landing_page_url, loc.pdf_url);
     if (w.best_oa_location) urls.push(w.best_oa_location.landing_page_url, w.best_oa_location.pdf_url);
@@ -583,6 +586,66 @@ export function matchPreprintWork(paper, results) {
     if (pick) return pick;
   }
   return null;
+}
+
+// Titles match when the collapsed forms are equal, or one is a PREFIX of the
+// other — a working paper often gains or loses a subtitle on publication
+// ("Dueling Contests" vs "Dueling Contests and Platform's Coordinating
+// Role"). Never below 14 collapsed chars, and only ever used together with
+// the two-surname author check, so a title stem alone can't link a paper.
+function titlesMatch(a, b) {
+  if (!a || !b) return '';
+  if (a === b) return 'exact';
+  const s = a.length <= b.length ? a : b, l = a.length <= b.length ? b : a;
+  if (s.length < 14 || !l.startsWith(s)) return '';
+  // The longer title's extra words must not mark a SEPARATE follow-up
+  // publication — a comment/reply/corrigendum shares both the stem and the
+  // authors, and would link the WRONG paper's pre-print.
+  if (/comment|repl(y|ies)|corrigend|errat|rejoinder|retract/i.test(l.slice(s.length))) return '';
+  return 'prefix';
+}
+
+// Second search engine, SSRN via Crossref: OpenAlex's SSRN coverage is
+// patchy — many working papers that live on SSRN have no OpenAlex record at
+// all — but SSRN mints its DOIs THROUGH Crossref, so Crossref has every one
+// (prefix 10.2139). Same conservative matching as matchPreprintWork; the
+// pure matcher is split out for unit tests.
+export function matchCrossrefPreprint(paper, items) {
+  const nt = matchNorm(paper.title || '');
+  if (!nt) return null;
+  const py = parseInt(paper.year, 10);
+  const mine = lastNames(String(paper.authors || '').split(','));
+  for (const it of items || []) {
+    const wt = matchNorm(String((Array.isArray(it.title) ? it.title[0] : it.title) || ''));
+    const tmc = titlesMatch(nt, wt);
+    if (!tmc) continue;
+    const wn = lastNames((it.author || []).map(a => (a && a.family) || ''));
+    if (!mine.size || !wn.size) continue;
+    const need = Math.min(2, mine.size, wn.size);
+    let shared = 0;
+    for (const x of wn) if (mine.has(x)) shared++;
+    if (shared < need) continue;
+    const dp = it.issued && it.issued['date-parts'];
+    const wy = parseInt(dp && dp[0] && dp[0][0], 10);
+    if (py && wy && (wy > py + 1 || wy < py - (tmc === 'exact' ? 12 : 6))) continue;
+    const pick = preprintFromDoi(it.DOI);
+    if (pick) return pick;
+  }
+  return null;
+}
+
+async function searchSsrnViaCrossref(p) {
+  const q = String(p.Title || '').replace(/[^\w\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!q) return null;
+  const url = 'https://api.crossref.org/works?query.bibliographic=' + encodeURIComponent(q) +
+    '&filter=prefix:10.2139&rows=8&select=DOI,title,author,issued' +
+    `&mailto=${encodeURIComponent(MAILTO)}`;
+  const r = await oaGet(url);
+  // A transient failure (429/timeout/outage) must NOT read as 'searched, no
+  // match' — the caller leaves the paper un-stamped so a later run retries.
+  if (!r.ok) return { err: 1 };
+  return matchCrossrefPreprint({ title: p.Title, year: p.Year, authors: p.Authors },
+    (r.json && r.json.message && r.json.message.items) || []);
 }
 
 async function resolvePreprints(allPapers, cache) {
@@ -668,7 +731,9 @@ async function oaGet(url) {
 // papers still go first — see the eligibility sort). v2: bioRxiv/medRxiv/
 // NBER/OSF hosts, two-surname author check, year floor 1991 (arXiv's first
 // year, instead of 2005).
-export const TS_VER = 2;
+// v3: SSRN-via-Crossref second engine, prefix-tolerant title match (working
+// papers often gain/lose a subtitle on publication), OpenAlex per-page 25.
+export const TS_VER = 3;
 
 // Find each unlinked paper's arXiv/SSRN pre-print via an OpenAlex title.search,
 // matched conservatively by matchPreprintWork. Cache entries become {u,s}
@@ -695,21 +760,34 @@ export async function searchPreprintsByTitle(papers, cache, opts = {}) {
       ((parseInt(b.Year, 10) || 0) - (parseInt(a.Year, 10) || 0)));
   const todo = eligible.slice(0, cap);
   if (opts.log) console.log(`  preprints: title-searching up to ${todo.length} of ${eligible.length} unlinked papers…`);
-  let found = 0, searched = 0, throttled = 0;
+  let found = 0, searched = 0, throttled = 0, crFails = 0;
   for (let i = 0; i < todo.length; i++) {
     const p = todo[i];
     if (Date.now() > deadline) { if (opts.log) console.log('  preprints: title-search time budget reached — resuming next run.'); break; }
     const q = String(p.Title || '').replace(/[^\w\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
     if (!q) { cache[p._doi] = { none: 1, ts: TS_VER }; continue; }
     const url = 'https://api.openalex.org/works?filter=title.search:' + encodeURIComponent(q) +
-      '&per-page=10&select=doi,title,publication_year,authorships,best_oa_location,primary_location,locations' +
+      '&per-page=25&select=doi,title,publication_year,authorships,best_oa_location,primary_location,locations' +
       `&mailto=${encodeURIComponent(MAILTO)}`;
     const r = await oaGet(url);
     if (r.ok) {
       throttled = 0; searched++;
-      const pick = matchPreprintWork({ title: p.Title, year: p.Year, authors: p.Authors }, (r.json && r.json.results) || []);
-      cache[p._doi] = pick || { none: 1, ts: TS_VER };
-      if (pick) found++;
+      let pick = matchPreprintWork({ title: p.Title, year: p.Year, authors: p.Authors }, (r.json && r.json.results) || []);
+      let crErr = false;
+      if (!pick) {
+        const cr = await searchSsrnViaCrossref(p);        // second engine: SSRN lives in Crossref
+        if (cr && cr.err) crErr = true; else pick = cr;
+      }
+      if (crErr) {
+        // Crossref leg failed: leave the entry un-stamped so a later run
+        // re-runs BOTH engines for this paper (same contract as an errored
+        // OpenAlex lookup); a persistently failing Crossref stops the run.
+        if (++crFails >= 6) { if (opts.log) console.log('  preprints: Crossref failing — stopping title-search for this run.'); break; }
+      } else {
+        crFails = 0;
+        cache[p._doi] = pick || { none: 1, ts: TS_VER };
+        if (pick) found++;
+      }
       if (opts.log && searched % 500 === 0) console.log(`  preprints: …${searched} searched, ${found} linked so far`);
       // Periodic save so a long local run can be interrupted without losing work.
       if (opts.checkpoint && searched % 200 === 0) await opts.checkpoint(cache);
