@@ -138,6 +138,7 @@ const SELECT = [
   'DOI', 'title', 'author', 'issued', 'published-print', 'published-online',
   'created', 'volume', 'issue', 'page', 'abstract', 'type', 'group-title',
   'subject', 'container-title', 'short-container-title', 'assertion',
+  'is-referenced-by-count',
 ].join(',');
 
 function stripJats(s) {
@@ -305,6 +306,11 @@ function mapWork(item, src) {
   };
   if (src.seEditors) row['Senior Editor'] = se;
   if (src.aeEditors) row['Associate Editor'] = ae;
+  // Crossref citation count (is-referenced-by-count) — a different, lower metric
+  // than Google Scholar's; the lit page labels it "Cited by N · Crossref". Omit
+  // zero/missing so it never bloats the papers files or shows a "Cited by 0".
+  const citedBy = item['is-referenced-by-count'];
+  if (typeof citedBy === 'number' && citedBy > 0) row.CitedBy = citedBy;
   return row;
 }
 
