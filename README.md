@@ -1,7 +1,11 @@
 # lit-data-abs4
 
 A **satellite data shard** for [stouras.com/fun/lit/](https://www.stouras.com/fun/lit/)
-("The Lit" research paper browser): ABS 4/4* journals beyond the FT50/UTD24 lists.
+("The Lit" research paper browser): ABS 4/4* journals beyond the FT50/UTD24
+lists — **Operations / Supply Chain / Economics / Computer Science-related
+fields only** (the lit catalog covers FT50/UTD24 in full, all fields, but
+ABS coverage beyond those lists is deliberately limited to these fields;
+out-of-scope journals are marked `"retired": true`, never harvested).
 
 GitHub Pages caps a published site at 1 GB, so the lit catalog is sharded
 across data repos. This repo:
