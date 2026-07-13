@@ -1,0 +1,85 @@
+name: refresh citation counts (lit-data-abs4)
+
+# Refreshes this shard's CitedBy counts (data/) from OpenAlex (cited_by_count)
+# and Semantic Scholar (citationCount) — both much closer to Google Scholar's
+# number than Crossref's is-referenced-by-count, which the daily build keeps
+# as the floor. Runs _scraper/citations-ci.mjs once a day: a bounded (~45 min)
+# oldest-first sweep into data/_citations.json, then applies the cache to the
+# papers files and commits data/ back. The catalog converges to an
+# every-couple-of-days refresh cadence. See the header of citations-ci.mjs.
+
+on:
+  schedule:
+    # Daily — clear of this repo's daily build; an overlap with a preprint
+    # backfill slice simply queues behind it (same concurrency group).
+    - cron: '35 3 * * *'
+  workflow_dispatch: {}      # run on demand from the Actions tab
+
+# SAME concurrency group as update-data.yml and preprints-backfill.yml — all
+# three commit data/, so they must queue, never race.
+concurrency:
+  group: update-data-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write            # needed to commit the refreshed data back
+
+jobs:
+  citations:
+    runs-on: ubuntu-latest
+    # Headroom over the 45-min sweep budget + apply/commit.
+    timeout-minutes: 65
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Refresh citation counts (OpenAlex+Semantic Scholar, bounded)
+        env:
+          # Own OpenAlex quota identity — never starves this shard's preprint
+          # backfill or the other datasets' sweeps.
+          FT50_MAILTO: kstouras+abs4cite@gmail.com
+        run: node _scraper/citations-ci.mjs
+
+      - name: Commit refreshed data
+        # always(): if the sweep step is killed (timeout/transient), commit
+        # whatever the checkpointed cache already holds — counts are refreshed
+        # monotonically and losing a whole run's sweep to a late kill would
+        # waste the slot.
+        if: always() && github.ref == 'refs/heads/main'
+        # Same hardened push as preprints-backfill.yml: on a rejected push,
+        # take the new tip's data and re-apply ONLY our cache counts onto it
+        # (citations-ci.mjs --apply-only --merge-cache).
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "No data changes — nothing to commit."
+            exit 0
+          fi
+          cp data/_citations.json /tmp/shard-citations-ours.json
+          git commit -m "refresh citation counts"
+          for i in 1 2 3; do
+            if git push origin HEAD:${{ github.ref_name }}; then
+              echo "Pushed on attempt $i."
+              exit 0
+            fi
+            echo "Push rejected (concurrent commit?) — re-applying our counts on the new tip…"
+            git fetch origin ${{ github.ref_name }}
+            git reset --hard origin/${{ github.ref_name }}
+            node _scraper/citations-ci.mjs --apply-only --merge-cache=/tmp/shard-citations-ours.json
+            git add data
+            if git diff --cached --quiet; then
+              echo "The concurrent commit already contains these counts — nothing left to push."
+              exit 0
+            fi
+            git commit -m "refresh citation counts"
+            sleep 5
+          done
+          echo "::error::Could not push the refreshed data after 3 attempts."
+          exit 1
