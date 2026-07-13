@@ -915,13 +915,25 @@ export async function refreshCitations(allPapers, cache, opts = {}) {
           `&mailto=${encodeURIComponent(MAILTO)}`;
         const r = await oaGet(url);
         if (!r.ok) {
-          if (r.status === 429 || r.status === 403 || ++oaFails >= 6) {
+          const throttle = r.status === 429 || r.status === 403;
+          oaFails++;
+          // A Retry-After of hours means the day's quota is spent; six
+          // consecutive failures read the same. Anything else is per-second
+          // burst throttling (shared CI egress IPs 429 freely) or a transient
+          // blip — ride it out with bounded backoff instead of losing the
+          // leg for the whole run on one 429 (the preprint search's patient
+          // mode, same rationale).
+          if ((throttle && r.retryAfter > 3600) || oaFails >= 6) {
             oaAlive = false;
             console.log('  citations: OpenAlex quota/throttle — dropping the OpenAlex leg for this run.');
             break;
           }
-          await sleep(2000);
-          j -= 50; continue; // transient: retry this batch (bounded by oaFails)
+          const wait = throttle
+            ? Math.max(r.retryAfter * 1000, Math.min(5000 * Math.pow(2, oaFails - 1), 60000))
+            : 2000;
+          if (Date.now() + wait > deadline) break; // run is ending — don't burn the budget waiting
+          await sleep(wait);
+          j -= 50; continue; // retry this batch (bounded by oaFails)
         }
         oaFails = 0;
         for (const w of r.json.results || []) {
