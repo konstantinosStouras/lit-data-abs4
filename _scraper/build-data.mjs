@@ -362,6 +362,18 @@ function regKey(row) {
   return row._doi || ('t:' + normTitle(row.Title) + '|' + row.Year);
 }
 
+// Tie-break equal-rank rows newest-added-first (mirrors the lit native
+// pipeline). pubRank cannot order an Articles-in-Advance block (no volume/
+// issue/page to grade), which froze those rows in registry-key
+// (≈oldest-DOI-first) order — the newest advance article sank to the BOTTOM of
+// its block. The registry's first-seen date is the one chronology those rows
+// do have: a row not yet registered was added THIS run (it is stamped right
+// after these sorts), so it ranks newest; the un-dated onboarding
+// back-catalogue ('') keeps its stable regKey order at the end.
+function addedCmp(regMap, a, b) {
+  return cmp(regMap[regKey(b)] ?? '9999', regMap[regKey(a)] ?? '9999');
+}
+
 // ── same-work duplicate collapse (near-verbatim from lit/_scraper) ──────────
 // Crossref keeps superseded registrations alive: publishers re-register the
 // same article under a second DOI (JORS's Palgrave→Taylor & Francis move left
@@ -1367,9 +1379,12 @@ async function main() {
 
   // 3. Collapse duplicate registrations of the same work (second DOIs Crossref
   // still serves — see collapseSameWork), then deterministic order per source.
+  // (The registry loads here, before updateRegistry below, because the
+  // added-date tiebreak needs the PREVIOUS run's first-seen dates.)
+  const reg = await loadRegistry();
   for (const src of LOCAL_JOURNALS) {
     bySource[src.key] = collapseSameWork(bySource[src.key], src.key);
-    bySource[src.key].sort((a, b) => (b._rank - a._rank) || cmp(regKey(a), regKey(b)));
+    bySource[src.key].sort((a, b) => (b._rank - a._rank) || addedCmp(reg.map, a, b) || cmp(regKey(a), regKey(b)));
   }
   const allPapers = LOCAL_JOURNALS.flatMap(s => bySource[s.key]);
 
@@ -1401,7 +1416,6 @@ async function main() {
   }
   applyCitations(allPapers, citationsCache);
 
-  const reg = await loadRegistry();
   const registry = updateRegistry(bySource, reg);
 
   const authors = buildAuthors(allPapers);
