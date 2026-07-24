@@ -373,8 +373,18 @@ function regKey(row) {
 // are always kept. Titles compare via the fully-collapsing matchNorm (not this
 // file's word-gap registry normTitle), same as the pre-print matcher.
 const DUP_MIN_TITLE = 15;
+// matchNorm alone would keep an HTML-entity variant apart ("X\u0304 Control
+// Chart" vs "_ X &nbsp; Control Chart" — a real JORS/JSTOR twin), because the
+// entity's NAME leaks letters into the collapsed title. Decode entities first,
+// like the reference pipeline's ec-pages normTitle.
+function dupDecode(s) {
+  return String(s || '')
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&[a-z]{2,8};/gi, ' ');
+}
 function dupTitleKey(title) {
-  const k = matchNorm(title);
+  const k = matchNorm(dupDecode(title));
   return k.length >= DUP_MIN_TITLE ? k : '';
 }
 function dupSurnames(authors) {
