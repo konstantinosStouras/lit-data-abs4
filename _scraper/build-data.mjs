@@ -362,6 +362,121 @@ function regKey(row) {
   return row._doi || ('t:' + normTitle(row.Title) + '|' + row.Year);
 }
 
+// ── same-work duplicate collapse (near-verbatim from lit/_scraper) ──────────
+// Crossref keeps superseded registrations alive: publishers re-register the
+// same article under a second DOI (JORS's Palgrave→Taylor & Francis move left
+// every 10.1057/jors.* paper a live 10.1080/ twin, online-first stubs are never
+// withdrawn, plain double-deposits), so a DOI-keyed harvest lists the same
+// paper twice. Collapse rows that are provably the SAME work — conservative on
+// purpose: recurring same-title items (annual editor reports, per-issue
+// notices, multi-part articles) differ in volume/issue/page or in authors and
+// are always kept. Titles compare via the fully-collapsing matchNorm (not this
+// file's word-gap registry normTitle), same as the pre-print matcher.
+const DUP_MIN_TITLE = 15;
+function dupTitleKey(title) {
+  const k = matchNorm(title);
+  return k.length >= DUP_MIN_TITLE ? k : '';
+}
+function dupSurnames(authors) {
+  return String(authors || '').split(/[,;]/).map((a) => {
+    const parts = stripAccents(String(a)).toLowerCase()
+      .replace(/[^a-z ]+/g, ' ').trim().split(/\s+/);
+    return parts[parts.length - 1] || '';
+  }).filter((s) => s.length > 1);
+}
+function dupShareSurname(a, b) {
+  const sa = dupSurnames(a), sb = dupSurnames(b);
+  if (!sa.length || !sb.length) return false;
+  const set = new Set(sa);
+  return sb.some((s) => set.has(s));
+}
+const dupFirstPage = (p) => String(p || '').split(/[-–]/)[0].trim().toLowerCase()
+  .replace(/^n\/a$/, '');
+const dupIsStub = (r) => !String(r.Volume || '').trim() && !String(r.Issue || '').trim();
+
+// 'a' same printed location under two DOIs; 'b' online-first stub vs published
+// (≤3y apart); 'c' two stubs of one work (≤1y apart). null = not the same work.
+export function sameWorkDup(r1, r2) {
+  if (!dupTitleKey(r1.Title) || dupTitleKey(r1.Title) !== dupTitleKey(r2.Title)) return null;
+  const shared = dupShareSurname(r1.Authors, r2.Authors);
+  const v1 = String(r1.Volume || '').trim(), v2 = String(r2.Volume || '').trim();
+  if (v1 && v1 === v2 && String(r1.Issue || '').trim() === String(r2.Issue || '').trim()
+      && dupFirstPage(r1.Page) === dupFirstPage(r2.Page)) {
+    const authorless = !dupSurnames(r1.Authors).length && !dupSurnames(r2.Authors).length;
+    return (shared || authorless) ? 'a' : null;
+  }
+  if (!shared) return null;
+  const y1 = parseInt(r1.Year, 10) || 0, y2 = parseInt(r2.Year, 10) || 0;
+  const s1 = dupIsStub(r1), s2 = dupIsStub(r2);
+  if (s1 !== s2) return Math.abs(y1 - y2) <= 3 ? 'b' : null;
+  if (s1 && s2) return Math.abs(y1 - y2) <= 1 ? 'c' : null;
+  return null;
+}
+
+// Fullness rank deciding WHICH duplicate registration to keep.
+export function dupRank(r) {
+  const doi = String(r.DOI || '').toLowerCase();
+  return (dupIsStub(r) ? 0 : 8) +
+    (String(r.Abstract || '').trim() ? 4 : 0) +
+    (/[-–]/.test(String(r.Page || '')) ? 2 : 0) +
+    (doi && !doi.includes('10.2307/') && !/10\.\d+\/\//.test(doi.replace(/^https?:\/\//, '')) ? 1 : 0);
+}
+
+function dupMergeInto(keep, drop) {
+  for (const f of ['Authors', 'Affiliations', 'Page', 'Abstract', 'Orcids']) {
+    if (drop[f] !== undefined && !String(keep[f] ?? '').trim() && String(drop[f] ?? '').trim()) {
+      keep[f] = drop[f];
+    }
+  }
+  if ((drop.CitedBy || 0) > (keep.CitedBy || 0)) {
+    keep.CitedBy = drop.CitedBy;
+    if (drop.CitedBySrc) keep.CitedBySrc = drop.CitedBySrc; else delete keep.CitedBySrc;
+  }
+  if (!keep.Preprint && drop.Preprint) {
+    keep.Preprint = drop.Preprint;
+    if (drop.PreprintSrc) keep.PreprintSrc = drop.PreprintSrc;
+  }
+}
+
+// Collapse duplicate registrations within one source's rows. Deterministic and
+// idempotent, so the daily rebuild converges on the same deduped set.
+export function collapseSameWork(rows, label) {
+  const byTitle = new Map();
+  for (const r of rows) {
+    const k = dupTitleKey(r.Title);
+    if (!k) continue;
+    const g = byTitle.get(k);
+    if (g) g.push(r); else byTitle.set(k, [r]);
+  }
+  const dropped = new Set();
+  for (const group of byTitle.values()) {
+    if (group.length < 2) continue;
+    let merged = true;
+    while (merged) { // re-scan after each merge so 3+-row groups fully settle
+      merged = false;
+      for (let i = 0; i < group.length && !merged; i++) {
+        for (let j = i + 1; j < group.length; j++) {
+          if (!sameWorkDup(group[i], group[j])) continue;
+          const ri = dupRank(group[i]), rj = dupRank(group[j]);
+          const keepJ = rj > ri ||
+            (rj === ri && cmp(String(group[j].DOI), String(group[i].DOI)) > 0);
+          const keep = keepJ ? group[j] : group[i];
+          const drop = keepJ ? group[i] : group[j];
+          dupMergeInto(keep, drop);
+          dropped.add(drop);
+          group.splice(keepJ ? i : j, 1);
+          merged = true;
+          break;
+        }
+      }
+    }
+  }
+  if (dropped.size && label) {
+    console.log(`  ${label}: collapsed ${dropped.size} duplicate registration(s) of already-listed papers`);
+  }
+  return dropped.size ? rows.filter((r) => !dropped.has(r)) : rows;
+}
+
 // Rebuild the internal fields of a row read back from a committed
 // papers-<key>.json (publicRow stripped them before writing). ORCIDs are
 // preserved across the reuse cycle via the pipe-joined `Orcids` field that
@@ -1235,8 +1350,10 @@ async function main() {
     }
   }
 
-  // 3. Deterministic order per source, then combined order for aggregates.
+  // 3. Collapse duplicate registrations of the same work (second DOIs Crossref
+  // still serves — see collapseSameWork), then deterministic order per source.
   for (const src of LOCAL_JOURNALS) {
+    bySource[src.key] = collapseSameWork(bySource[src.key], src.key);
     bySource[src.key].sort((a, b) => (b._rank - a._rank) || cmp(regKey(a), regKey(b)));
   }
   const allPapers = LOCAL_JOURNALS.flatMap(s => bySource[s.key]);
