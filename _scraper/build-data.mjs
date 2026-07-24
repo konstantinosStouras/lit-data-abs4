@@ -1038,7 +1038,9 @@ function stripAccents(s) {
 }
 function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
 
-function buildAuthors(papers) {
+// Exported so a maintenance script can recompute meta.json's authorCount
+// offline from the committed papers files (rehydrated), with zero drift.
+export function buildAuthors(papers) {
   const parent = new Map();
   const find = (k) => {
     let r = k;
@@ -1110,7 +1112,10 @@ function buildAuthors(papers) {
   // Across 50 journals the full set would be enormous; keep multi-paper
   // authors (plus everyone in the top slice) so the file stays a sane size.
   const trimmed = out.filter((a, i) => a.Papers >= 2 || i < 5000);
-  return trimmed.map(({ id, ...rest }) => rest);
+  // The full pre-trim distinct count still goes out via meta.json — the lit
+  // page sums every catalog's authorCount into its header "from N authors"
+  // stat (authors de-duplicated within each catalog, like native/FT50).
+  return { rows: trimmed.map(({ id, ...rest }) => rest), distinct: out.length };
 }
 
 function buildAffiliations(papers) {
@@ -1326,20 +1331,21 @@ async function main() {
   const meta = {
     lastPull: PULL_DATE,
     paperCount: total,
+    authorCount: authors.distinct,
     journalCount: JOURNALS.length,
     perSource: Object.fromEntries(sources.map(s => [s.key, s.count])),
     source: 'Crossref REST API, one pull per journal (ABS 4/4* journals beyond the FT50/UTD24 lists)',
   };
 
   await writeJson('sources.json', sources);
-  await writeJson('authors.json', authors);
+  await writeJson('authors.json', authors.rows);
   await writeJson('affiliations.json', affiliations);
   await writeJson('recent.json', recent);
   await writeJson('meta.json', meta);
   await writeJson('_registry.json', registry);
 
   console.log(`done: ${total} papers (${sources.map(s => `${s.key}:${s.count}`).join(' ')}), ` +
-    `${authors.length} authors, ${affiliations.length} affiliations, ${recent.length} recent`);
+    `${authors.rows.length} authors (${authors.distinct} distinct), ${affiliations.length} affiliations, ${recent.length} recent`);
 }
 
 async function writeJson(name, data) {
