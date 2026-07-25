@@ -141,60 +141,16 @@ const SELECT = [
   'is-referenced-by-count',
 ].join(',');
 
-function stripJats(s) {
-  if (!s) return '';
-  return String(s)
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// ── Stray trailing separators (a publisher deposit artifact) ──────────────────
-// Some publishers deposit a title with a dangling separator: OUP's JEEA/EJ send
-// "The Lock-In Effect and the Corporate Payout Puzzle,", AMR sends "The Ethics
-// of Organizational Politics ,", and a title whose subtitle was lost arrives as
-// "America's Best:". The separator is not part of the title, so a card renders
-// it as visible punctuation noise. The same artifact reaches affiliations
-// ("University of Tokyo ,"), where a dangling ';' additionally shows up as a
-// doubled "; ;" once the affiliation set is joined on '; '.
-//
-// Trims one separator at a time, so " ,", ",," and ", ;" all collapse — but
-// NEVER the ';' that TERMINATES an HTML entity ("…&quot;", "…&ast;"), since
-// cutting that would corrupt the entity into "&quot". Pure + idempotent, so it
-// is safe to (re)apply on every build and over the committed data.
-export function trimTrailingSeparators(raw) {
-  let s = String(raw == null ? '' : raw).replace(/\s+$/, '');
-  while (/[,;:]$/.test(s)) {
-    if (s.endsWith(';') && /&(?:#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);$/i.test(s)) break;
-    s = s.slice(0, -1).replace(/\s+$/, '');
-  }
-  return s;
-}
-
-// A title as served: JATS/markup stripped, then any dangling separator trimmed.
-export function titleText(s) { return trimTrailingSeparators(stripJats(s)); }
-
-// One affiliation name as served (the page splits Affiliations on ';').
-export function affilName(s) {
-  return trimTrailingSeparators(String(s || '').replace(/\s+/g, ' ').trim());
-}
-
-// A whole Affiliations string as served: trim each ';'-separated name and drop
-// any that collapses to nothing (an empty segment is what leaves a "; ;" gap).
-// The ';' that TERMINATES an HTML entity is NOT a separator — splitting on it
-// would tear "Universidad de Lima, Per&#x00FA;" apart and lose the entity's
-// closing ';' — so those are masked out before the split and restored after.
-export function affilParts(s) {
-  const str = String(s || '');
-  if (!str) return [];
-  const MASK = '\u0001';
-  const masked = str.replace(/&(?:#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (m) => m.slice(0, -1) + MASK);
-  return masked.split(';')
-    .map((seg) => affilName(seg.split(MASK).join(';')))
-    .filter(Boolean);
-}
-export function affilList(s) { return affilParts(s).join('; '); }
+// Titles/abstracts arrive with HTML/JATS entities (sometimes double-encoded)
+// and markup; _entities.mjs (vendored from the site repo) decodes + strips
+// them, and carries the LIT-260725-YWTL trailing-separator trim. stripJats
+// keeps its historical name but is now the full decoder — the old local
+// version decoded only &lt;/&gt;/&amp; and stripped tags BEFORE decoding, so a
+// double-encoded "&lt;sup&gt;2&lt;/sup&gt;" survived as literal markup and
+// every other entity ("&apos;", "&nbsp;", "&EACUTE;") rendered raw.
+import { cleanText as stripJats, trimTrailingSeparators, titleText,
+  affilName, affilParts, affilList } from './_entities.mjs';
+export { stripJats, trimTrailingSeparators, titleText, affilName, affilParts, affilList };
 
 function yearOf(item) {
   const pick = (d) => d && d['date-parts'] && d['date-parts'][0] && d['date-parts'][0][0];
@@ -206,7 +162,10 @@ function yearOf(item) {
 
 // Display name with no internal comma (the page splits Authors on commas).
 function authorName(a) {
-  const nm = [a.given, a.family].filter(Boolean).join(' ') || a.name || '';
+  // Decode any deposited entities ("R&eacute;gis", "Bilge Y&inodot;lmaz") FIRST,
+  // then strip commas — the page splits Authors on commas, so a decoded comma
+  // must never survive into the name.
+  const nm = stripJats([a.given, a.family].filter(Boolean).join(' ') || a.name || '');
   return nm.replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
