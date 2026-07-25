@@ -150,6 +150,42 @@ function stripJats(s) {
     .trim();
 }
 
+// ── Stray trailing separators (a publisher deposit artifact) ──────────────────
+// Some publishers deposit a title with a dangling separator: OUP's JEEA/EJ send
+// "The Lock-In Effect and the Corporate Payout Puzzle,", AMR sends "The Ethics
+// of Organizational Politics ,", and a title whose subtitle was lost arrives as
+// "America's Best:". The separator is not part of the title, so a card renders
+// it as visible punctuation noise. The same artifact reaches affiliations
+// ("University of Tokyo ,"), where a dangling ';' additionally shows up as a
+// doubled "; ;" once the affiliation set is joined on '; '.
+//
+// Trims one separator at a time, so " ,", ",," and ", ;" all collapse — but
+// NEVER the ';' that TERMINATES an HTML entity ("…&quot;", "…&ast;"), since
+// cutting that would corrupt the entity into "&quot". Pure + idempotent, so it
+// is safe to (re)apply on every build and over the committed data.
+export function trimTrailingSeparators(raw) {
+  let s = String(raw == null ? '' : raw).replace(/\s+$/, '');
+  while (/[,;:]$/.test(s)) {
+    if (s.endsWith(';') && /&(?:#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);$/i.test(s)) break;
+    s = s.slice(0, -1).replace(/\s+$/, '');
+  }
+  return s;
+}
+
+// A title as served: JATS/markup stripped, then any dangling separator trimmed.
+export function titleText(s) { return trimTrailingSeparators(stripJats(s)); }
+
+// One affiliation name as served (the page splits Affiliations on ';').
+export function affilName(s) {
+  return trimTrailingSeparators(String(s || '').replace(/\s+/g, ' ').trim());
+}
+
+// A whole Affiliations string as served: trim each ';'-separated name and drop
+// any that collapses to nothing (an empty segment is what leaves a "; ;" gap).
+export function affilList(s) {
+  return String(s || '').split(';').map(affilName).filter(Boolean).join('; ');
+}
+
 function yearOf(item) {
   const pick = (d) => d && d['date-parts'] && d['date-parts'][0] && d['date-parts'][0][0];
   return String(
@@ -226,7 +262,7 @@ function assertionEditor(item) {
 // ── mapping ────────────────────────────────────────────────────────────────
 
 function mapWork(item, src) {
-  const title = (item.title && item.title[0]) ? stripJats(item.title[0]) : '';
+  const title = (item.title && item.title[0]) ? titleText(item.title[0]) : '';
   if (!title) return null;
 
   // Keep names and ORCIDs aligned: filter nameless author entries *before*
@@ -238,7 +274,7 @@ function mapWork(item, src) {
   const authorsArr = authorPairs.map(x => x.name);
   const affSet = new Set();
   (item.author || []).forEach(a => (a.affiliation || []).forEach(af => {
-    if (af && af.name) affSet.add(af.name.replace(/\s+/g, ' ').trim());
+    if (af && af.name) { const nm = affilName(af.name); if (nm) affSet.add(nm); }
   }));
 
   const abstract = stripJats(item.abstract || '').slice(0, MAX_ABSTRACT);
@@ -1323,9 +1359,9 @@ function mergeSupplement(bySource) {
     seen.add(doi);
     const year = String(s.Year || PULL_DATE.slice(0, 4));
     const row = {
-      Title: stripJats(s.Title),
+      Title: titleText(s.Title),
       Authors: s.Authors || '',
-      Affiliations: s.Affiliations || '',
+      Affiliations: affilList(s.Affiliations),
       DOI: 'https://doi.org/' + rawDoi,
       Volume: '', Issue: '', Page: '',
       Year: year,
