@@ -182,9 +182,19 @@ export function affilName(s) {
 
 // A whole Affiliations string as served: trim each ';'-separated name and drop
 // any that collapses to nothing (an empty segment is what leaves a "; ;" gap).
-export function affilList(s) {
-  return String(s || '').split(';').map(affilName).filter(Boolean).join('; ');
+// The ';' that TERMINATES an HTML entity is NOT a separator — splitting on it
+// would tear "Universidad de Lima, Per&#x00FA;" apart and lose the entity's
+// closing ';' — so those are masked out before the split and restored after.
+export function affilParts(s) {
+  const str = String(s || '');
+  if (!str) return [];
+  const MASK = '\u0001';
+  const masked = str.replace(/&(?:#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (m) => m.slice(0, -1) + MASK);
+  return masked.split(';')
+    .map((seg) => affilName(seg.split(MASK).join(';')))
+    .filter(Boolean);
 }
+export function affilList(s) { return affilParts(s).join('; '); }
 
 function yearOf(item) {
   const pick = (d) => d && d['date-parts'] && d['date-parts'][0] && d['date-parts'][0][0];
@@ -274,7 +284,7 @@ function mapWork(item, src) {
   const authorsArr = authorPairs.map(x => x.name);
   const affSet = new Set();
   (item.author || []).forEach(a => (a.affiliation || []).forEach(af => {
-    if (af && af.name) { const nm = affilName(af.name); if (nm) affSet.add(nm); }
+    if (af && af.name) affilParts(af.name).forEach((nm) => affSet.add(nm));
   }));
 
   const abstract = stripJats(item.abstract || '').slice(0, MAX_ABSTRACT);
