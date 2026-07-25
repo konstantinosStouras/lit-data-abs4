@@ -1042,18 +1042,25 @@ export async function refreshCitations(allPapers, cache, opts = {}) {
   const todo = eligible.slice(0, cap);
   if (!todo.length) { console.log('  citations: cache is fresh — nothing to refresh.'); return 0; }
   console.log(`  citations: refreshing ${todo.length} of ${eligible.length} new/stale DOIs…`);
+  // Records whose Crossref harvest deposited NO authors (Crossref omits author
+  // metadata for many older/certain-publisher DOIs). For these we also read
+  // OpenAlex `authorships` off the same call and cache a fallback author string
+  // (`au`) so applyCitations can fill the empty Authors — never overwriting a
+  // Crossref-provided list.
+  const authorless = new Set();
+  for (const p of allPapers) if (p._doi && !String(p.Authors || '').trim()) authorless.add(p._doi);
   let oaAlive = true, s2Alive = true, oaFails = 0, s2Fails = 0, done = 0;
   for (let i = 0; i < todo.length && (oaAlive || s2Alive); i += 500) {
     if (Date.now() > deadline) { console.log('  citations: time budget reached — resuming next run.'); break; }
     const chunk = todo.slice(i, i + 500);
-    const oaVal = new Map(), s2Val = new Map(), oaDone = new Set();
+    const oaVal = new Map(), s2Val = new Map(), oaDone = new Set(), oaAu = new Map();
 
     // Leg 1: OpenAlex, 50 DOIs per call (like seedPreprintsByDoi).
     if (oaAlive) {
       for (let j = 0; j < chunk.length; j += 50) {
         const batch = chunk.slice(j, j + 50);
         const url = 'https://api.openalex.org/works?filter=doi:' + batch.join('|') +
-          '&per-page=50&select=doi,cited_by_count' +
+          '&per-page=50&select=doi,cited_by_count,authorships' +
           `&mailto=${encodeURIComponent(MAILTO)}`;
         const r = await oaGet(url);
         if (!r.ok) {
@@ -1081,6 +1088,12 @@ export async function refreshCitations(allPapers, cache, opts = {}) {
         for (const w of r.json.results || []) {
           const doi = String(w.doi || '').replace(/^https?:\/\/doi\.org\//i, '').toLowerCase();
           if (typeof w.cited_by_count === 'number') oaVal.set(doi, w.cited_by_count);
+          if (authorless.has(doi) && Array.isArray(w.authorships) && w.authorships.length) {
+            const names = w.authorships
+              .map(a => String((a.author && a.author.display_name) || '').replace(/,/g, ' ').replace(/\s+/g, ' ').trim())
+              .filter(Boolean);
+            if (names.length) oaAu.set(doi, names.join(', '));
+          }
         }
         // A DOI absent from a SUCCESSFUL batch is simply not in OpenAlex —
         // that is a concluded zero, unlike a DOI in a failed batch.
@@ -1115,6 +1128,10 @@ export async function refreshCitations(allPapers, cache, opts = {}) {
       if (prev && prev.c > c && !(oaDone.has(d) && s2DoneChunk)) { c = prev.c; s2 = !!prev.s2; }
       const e = { t: today };
       if (c > 0) { e.c = c; if (s2) e.s2 = 1; }
+      // Carry the OpenAlex author fallback for author-less records (this run's
+      // find wins; otherwise keep a previously cached one).
+      const au = oaAu.get(d) || (prev && prev.au);
+      if (au) e.au = au;
       cache[d] = e;
       done++;
     }
@@ -1126,12 +1143,16 @@ export async function refreshCitations(allPapers, cache, opts = {}) {
 }
 
 export function applyCitations(allPapers, cache) {
-  let n = 0;
+  let n = 0, a = 0;
   for (const p of allPapers) {
     const x = p._doi && cache[p._doi];
-    if (x && x.c > (p.CitedBy || 0)) { p.CitedBy = x.c; p.CitedBySrc = x.s2 ? 's2' : 'oa'; n++; }
+    if (!x) continue;
+    if (x.c > (p.CitedBy || 0)) { p.CitedBy = x.c; p.CitedBySrc = x.s2 ? 's2' : 'oa'; n++; }
+    // Fill authors ONLY where Crossref deposited none — never overwrite a list.
+    if (x.au && !String(p.Authors || '').trim()) { p.Authors = x.au; a++; }
   }
-  console.log(`  citations: ${n}/${allPapers.length} papers carry an OpenAlex/Semantic Scholar count above Crossref's`);
+  console.log(`  citations: ${n}/${allPapers.length} papers carry an OpenAlex/Semantic Scholar count above Crossref's` +
+    (a ? `; ${a} had missing authors filled from OpenAlex` : ''));
 }
 
 // ── Registry (key -> first-seen date) ──────────────────────────────────────
