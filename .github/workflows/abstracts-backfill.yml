@@ -49,6 +49,7 @@ jobs:
           # Scholar leg off the throttled anonymous pool.
           ELSEVIER_API_KEY: ${{ secrets.ELSEVIER_API_KEY }}
           ELSEVIER_INST_TOKEN: ${{ secrets.ELSEVIER_INST_TOKEN }}   # optional off-campus entitlement token
+          SPRINGER_API_KEY: ${{ secrets.SPRINGER_API_KEY }}   # optional — the Meta API key (abstracts for Springer/Palgrave/Kluwer DOIs)
           S2_API_KEY: ${{ secrets.S2_API_KEY }}
         run: node _scraper/abstracts-ci.mjs
 

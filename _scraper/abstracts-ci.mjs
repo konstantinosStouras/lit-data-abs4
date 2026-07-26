@@ -82,6 +82,13 @@ const ELS_KEY = process.env.ELSEVIER_API_KEY || '';
 const ELS_INSTTOKEN = process.env.ELSEVIER_INST_TOKEN || '';
 const ELS_PACE_MS = Math.max(250, parseInt(process.env.FT50_ABS_ELS_PACE_MS || '', 10) || 350);
 const ELS_PREFIX = /^10\.1016\//;
+// Springer Nature Meta API (free key from dev.springernature.com — the META
+// key, not the Open Access one): serves abstracts for Springer/Palgrave/Kluwer
+// DOIs. Inert until a SPRINGER_API_KEY secret is set; the leg drops out for
+// the run on 401/403/429 so a spent daily quota never stalls the others.
+const SPR_KEY = process.env.SPRINGER_API_KEY || '';
+const SPR_PACE_MS = Math.max(250, parseInt(process.env.FT50_ABS_SPR_PACE_MS || '', 10) || 400);
+const SPR_PREFIX = /^10\.(1007|1057|1023)\//;
 const NEEDY_MAX_LEN = 300; // mirror the INFORMS harvester's teaser threshold
 const T0 = Date.now();
 const day = () => Math.floor(Date.now() / 86400000);
@@ -113,6 +120,20 @@ export function elsevierAbstract(body) {
     return '';
   };
   return cleanText(firstString(d));
+}
+
+// The abstract out of a Springer Meta API v2 JSON response ({records:[{abstract}]}).
+// Exported for the selftest; tolerant of the abstract arriving as a nested
+// object the way elsevierAbstract is.
+export function springerAbstract(body) {
+  const rec = body && Array.isArray(body.records) && body.records[0];
+  const firstString = (v) => {
+    if (typeof v === 'string') return v;
+    if (Array.isArray(v)) { for (const x of v) { const s = firstString(x); if (s) return s; } return ''; }
+    if (v && typeof v === 'object') { for (const x of Object.values(v)) { const s = firstString(x); if (s) return s; } }
+    return '';
+  };
+  return cleanText(firstString(rec && rec.abstract)).replace(/^Abstract\s+/i, '');
 }
 
 // Merge another cache in: an entry WITH an abstract beats a none-record, a
@@ -212,7 +233,8 @@ async function main() {
       const cur = cache[doi];
       if (cur && cur.a) continue;
       if (cur && cur.none && (day() - (cur.t || 0)) < MISS_TTL_DAYS &&
-          !(ELS_KEY && ELS_PREFIX.test(doi))) continue; // keyed run: retry Elsevier misses now
+          !(ELS_KEY && ELS_PREFIX.test(doi)) &&
+          !(SPR_KEY && SPR_PREFIX.test(doi))) continue; // keyed run: retry that publisher's misses now
       needy.push({ doi, y: parseInt(row.Year, 10) || 0 });
     }
   }
@@ -222,6 +244,8 @@ async function main() {
 
   let s2ok = USE_S2, elsOk = true, found = 0, checked = 0, batches = 0;
   const elsStats = { found: 0, empty: 0, e404: 0, other: 0 };
+  let sprOk = true;
+  const sprStats = { found: 0, empty: 0, other: 0 };
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   for (let i = 0; i < needy.length; i += 50) {
     if (Date.now() - T0 > BUDGET_MS) { console.log('⏱ budget spent — stopping this slice (resume-safe).'); break; }
@@ -287,6 +311,27 @@ async function main() {
         await sleep(ELS_PACE_MS);
       }
     }
+    // Leg 4: Springer Nature Meta API (keyed; Springer/Palgrave/Kluwer DOIs).
+    if (sprOk && SPR_KEY && unresolved.size) {
+      for (const doi of [...unresolved]) {
+        if (!SPR_PREFIX.test(doi)) continue;
+        if (Date.now() - T0 > BUDGET_MS) break;
+        try {
+          const r = await fetch(
+            `https://api.springernature.com/meta/v2/json?q=doi:%22${encodeURIComponent(doi)}%22&p=1&api_key=${encodeURIComponent(SPR_KEY)}`,
+            { headers: { Accept: 'application/json' } });
+          if (r.status === 401 || r.status === 403 || r.status === 429) {
+            sprOk = false; console.log(`  Springer leg dropped for this run (HTTP ${r.status} — key/quota).`); break;
+          }
+          if (r.ok) {
+            const text = springerAbstract(await r.json());
+            if (text.length >= 60) { cache[doi] = { a: text.slice(0, ABS_MAX) }; unresolved.delete(doi); found++; sprStats.found++; }
+            else sprStats.empty++;
+          } else sprStats.other++;
+        } catch (e) { sprOk = false; console.warn(`  Springer leg failed (${e.message}) — dropping it for this run.`); break; }
+        await sleep(SPR_PACE_MS);
+      }
+    }
     // All legs concluded for this batch: stamp the rest as misses (TTL-retried).
     for (const doi of unresolved) cache[doi] = { none: 1, t: day() };
     checked += batch.length;
@@ -298,6 +343,9 @@ async function main() {
   const withA = Object.values(cache).filter(v => v && v.a).length;
   console.log(`\n✓ Wrote ${CACHE_PATH}`);
   console.log(`  This run: ${checked} DOIs checked, ${found} abstracts found.`);
+  if (SPR_KEY && (sprStats.found + sprStats.empty + sprStats.other)) {
+    console.log(`  Springer leg: ${sprStats.found} found, ${sprStats.empty} no-abstract, ${sprStats.other} other.`);
+  }
   if (ELS_KEY && (elsStats.found + elsStats.empty + elsStats.e404 + elsStats.other)) {
     console.log(`  Elsevier leg: ${elsStats.found} found, ${elsStats.empty} 200-but-no-abstract, ` +
       `${elsStats.e404} not-found, ${elsStats.other} other.`);
