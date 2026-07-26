@@ -58,6 +58,10 @@ const DATA_DIR = process.env.FT50_DATA_DIR
 const MOCK_DIR = join(__dirname, 'mock');
 
 const MAILTO = process.env.FT50_MAILTO || 'kstouras@gmail.com';
+// Optional Semantic Scholar API key — moves the S2 leg off the throttled
+// anonymous pool. Inert until the S2_API_KEY secret/env is set.
+const S2_KEY = process.env.S2_API_KEY || '';
+
 const ROWS = 1000;                  // Crossref max page size
 const PAGE_PAUSE_MS = 120;          // politeness pause between cursor pages
 const JOURNAL_PAUSE_MS = 500;       // pause between journals
@@ -150,6 +154,7 @@ const SELECT = [
 // every other entity ("&apos;", "&nbsp;", "&EACUTE;") rendered raw.
 import { cleanText as stripJats, trimTrailingSeparators, titleText,
   affilName, affilParts, affilList } from './_entities.mjs';
+import { betterAbstract } from './abstracts-ci.mjs';
 export { stripJats, trimTrailingSeparators, titleText, affilName, affilParts, affilList };
 
 function yearOf(item) {
@@ -1004,7 +1009,8 @@ async function s2Batch(dois) {
     try {
       const res = await fetch('https://api.semanticscholar.org/graph/v1/paper/batch?fields=citationCount', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': `lit-scraper/1.0 (mailto:${MAILTO})` },
+        headers: { 'Content-Type': 'application/json', 'User-Agent': `lit-scraper/1.0 (mailto:${MAILTO})`,
+          ...(S2_KEY ? { 'x-api-key': S2_KEY } : {}) },
         body: JSON.stringify({ ids: dois.map(d => 'DOI:' + d) }),
         signal: ctrl.signal,
       });
@@ -1140,6 +1146,23 @@ export async function refreshCitations(allPapers, cache, opts = {}) {
   }
   console.log(`  citations: refreshed ${done} DOI(s) this run.`);
   return done;
+}
+
+// Overlay FULLER abstracts from the API backfill cache (_api-abstracts.json,
+// written by _scraper/abstracts-ci.mjs) — UPGRADE-only via betterAbstract, so
+// a Crossref teaser loses and fuller existing text is never replaced. Applied
+// in the daily build so a rebuild can never regress a backfilled abstract.
+// Mirrors the FT50 pipeline's applyAbstractCaches (keep in sync).
+async function applyAbstractCaches(allPapers) {
+  const raw = await loadJsonIfExists(join(DATA_DIR, '_api-abstracts.json'), {});
+  const map = raw.map || raw;
+  let up = 0;
+  for (const row of allPapers) {
+    const rec = row._doi && map[row._doi];
+    if (!rec || !rec.a) continue;
+    if (betterAbstract(row.Abstract, rec.a)) { row.Abstract = rec.a.slice(0, MAX_ABSTRACT); up++; }
+  }
+  if (up) console.log(`  abstracts: upgraded ${up} teaser/missing abstracts from the API cache`);
 }
 
 export function applyCitations(allPapers, cache) {
@@ -1441,6 +1464,7 @@ async function main() {
     await writeJson('_citations.json', citationsCache);
   }
   applyCitations(allPapers, citationsCache);
+  await applyAbstractCaches(allPapers);
 
   const registry = updateRegistry(bySource, reg);
 

@@ -1,0 +1,86 @@
+name: backfill abstracts (lit-data-abs4)
+
+# Fills missing/stub abstracts across this shard (data/) from OpenAlex
+# (abstract_inverted_index, batched 50/call), an optional Semantic Scholar leg
+# (500 DOIs/POST; drops out on throttle; S2_API_KEY moves it off the anonymous
+# pool) and — when the ELSEVIER_API_KEY secret is set — Elsevier's Abstract
+# Retrieval API for 10.1016/… DOIs, the bulk of this shard's missing abstracts.
+# Most of these journals deposit no abstract (or a stub) to Crossref, so the
+# daily build alone leaves most rows without one. Runs bounded ~40-min slices,
+# newest papers first, into data/_api-abstracts.json, and applies UPGRADE-only
+# (betterAbstract) to the served papers files. VENDORED from the site repo's
+# lit-ft50-abstracts-backfill.yml — keep in sync.
+# Distinct OpenAlex quota identity kstouras+abs4abs@gmail.com.
+
+on:
+  schedule:
+    - cron: '25 1,7,13,19 * * *'    # four slices a day, off the other jobs' minutes
+  workflow_dispatch: {}      # run on demand from the Actions tab
+
+# SAME concurrency group as update-data.yml / citations-update.yml /
+# preprints-backfill.yml — every data/ writer queues, never racing a commit.
+concurrency:
+  group: update-data-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55      # 40-min crawl budget + apply/commit headroom
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Backfill abstracts (bounded slice, newest first)
+        env:
+          FT50_ABS_BUDGET_MS: '2400000'
+          # Optional keys — both legs stay inert/anonymous until the secret is
+          # set on THIS repo (secrets are per-repo). ELSEVIER_API_KEY (a free
+          # institutional key from dev.elsevier.com) unlocks the Abstract
+          # Retrieval leg for 10.1016/… DOIs; S2_API_KEY moves the Semantic
+          # Scholar leg off the throttled anonymous pool.
+          ELSEVIER_API_KEY: ${{ secrets.ELSEVIER_API_KEY }}
+          S2_API_KEY: ${{ secrets.S2_API_KEY }}
+        run: node _scraper/abstracts-ci.mjs
+
+      - name: Commit refreshed data
+        if: always() && github.ref == 'refs/heads/main'
+        # Push-retry replay pattern (same as citations-update.yml): on a
+        # rejected push, take the new tip and re-apply ONLY our cache finds.
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "No data changes — nothing to commit."
+            exit 0
+          fi
+          cp data/_api-abstracts.json /tmp/abs-ours.json
+          git commit -m "lit: abstracts backfill (OpenAlex/S2/Elsevier)"
+          for i in 1 2 3; do
+            if git push origin HEAD:${{ github.ref_name }}; then
+              echo "Pushed on attempt $i."
+              exit 0
+            fi
+            echo "Push rejected (concurrent commit?) — replaying our finds on the new tip…"
+            git fetch origin ${{ github.ref_name }}
+            git reset --hard origin/${{ github.ref_name }}
+            node _scraper/abstracts-ci.mjs --apply-only --merge-cache=/tmp/abs-ours.json
+            git add data
+            if git diff --cached --quiet; then
+              echo "The concurrent commit already contains these abstracts — nothing left to push."
+              exit 0
+            fi
+            git commit -m "lit: abstracts backfill (OpenAlex/S2/Elsevier)"
+            sleep 5
+          done
+          echo "::error::Could not push the abstracts data after 3 attempts."
+          exit 1

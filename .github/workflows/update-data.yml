@@ -42,6 +42,7 @@ jobs:
 
       - name: Verify journal ISSNs against Crossref (warn-only)
         env:
+          S2_API_KEY: ${{ secrets.S2_API_KEY }}   # optional — moves the S2 leg off the anonymous pool
           FT50_MAILTO: kstouras+abs4@gmail.com
         run: node _scraper/verify-issns.mjs
 
