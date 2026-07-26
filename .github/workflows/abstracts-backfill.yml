@@ -48,6 +48,7 @@ jobs:
           # Retrieval leg for 10.1016/… DOIs; S2_API_KEY moves the Semantic
           # Scholar leg off the throttled anonymous pool.
           ELSEVIER_API_KEY: ${{ secrets.ELSEVIER_API_KEY }}
+          ELSEVIER_INST_TOKEN: ${{ secrets.ELSEVIER_INST_TOKEN }}   # optional off-campus entitlement token
           S2_API_KEY: ${{ secrets.S2_API_KEY }}
         run: node _scraper/abstracts-ci.mjs
 

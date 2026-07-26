@@ -74,6 +74,12 @@ const MISS_TTL_DAYS = parseInt(process.env.FT50_ABS_MISS_TTL_DAYS || '', 10) || 
 const USE_S2 = process.env.FT50_ABS_S2 !== '0';
 const S2_KEY = process.env.S2_API_KEY || '';
 const ELS_KEY = process.env.ELSEVIER_API_KEY || '';
+// Optional institutional token (X-ELS-Insttoken): Elsevier entitles ABSTRACT
+// text to an API key by the caller's INSTITUTIONAL IP RANGE — a GitHub runner
+// is off-campus, so without an insttoken most responses can carry metadata but
+// no dc:description. Request one via dev.elsevier.com support for server-side
+// use; inert until set.
+const ELS_INSTTOKEN = process.env.ELSEVIER_INST_TOKEN || '';
 const ELS_PACE_MS = Math.max(250, parseInt(process.env.FT50_ABS_ELS_PACE_MS || '', 10) || 350);
 const ELS_PREFIX = /^10\.1016\//;
 const NEEDY_MAX_LEN = 300; // mirror the INFORMS harvester's teaser threshold
@@ -215,6 +221,7 @@ async function main() {
   if (DRY) return;
 
   let s2ok = USE_S2, elsOk = true, found = 0, checked = 0, batches = 0;
+  const elsStats = { found: 0, empty: 0, e404: 0, other: 0 };
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   for (let i = 0; i < needy.length; i += 50) {
     if (Date.now() - T0 > BUDGET_MS) { console.log('⏱ budget spent — stopping this slice (resume-safe).'); break; }
@@ -261,16 +268,21 @@ async function main() {
         if (!ELS_PREFIX.test(doi)) continue;
         if (Date.now() - T0 > BUDGET_MS) break;
         try {
+          // view=META_ABS is what includes dc:description — the default view
+          // returns metadata WITHOUT the abstract text.
           const r = await fetch(
-            `https://api.elsevier.com/content/abstract/doi/${encodeURIComponent(doi)}?httpAccept=application/json`,
-            { headers: { 'X-ELS-APIKey': ELS_KEY, Accept: 'application/json' } });
+            `https://api.elsevier.com/content/abstract/doi/${encodeURIComponent(doi)}?view=META_ABS&httpAccept=application/json`,
+            { headers: { 'X-ELS-APIKey': ELS_KEY, Accept: 'application/json',
+              ...(ELS_INSTTOKEN ? { 'X-ELS-Insttoken': ELS_INSTTOKEN } : {}) } });
           if (r.status === 401 || r.status === 403 || r.status === 429) {
-            elsOk = false; console.log(`  Elsevier leg dropped for this run (HTTP ${r.status} — key/quota).`); break;
+            elsOk = false; console.log(`  Elsevier leg dropped for this run (HTTP ${r.status} — key/quota/entitlement).`); break;
           }
           if (r.ok) {
             const text = elsevierAbstract(await r.json());
-            if (text.length >= 60) { cache[doi] = { a: text.slice(0, ABS_MAX) }; unresolved.delete(doi); found++; }
-          }
+            if (text.length >= 60) { cache[doi] = { a: text.slice(0, ABS_MAX) }; unresolved.delete(doi); found++; elsStats.found++; }
+            else elsStats.empty++;
+          } else if (r.status === 404) elsStats.e404++;
+          else elsStats.other++;
         } catch (e) { elsOk = false; console.warn(`  Elsevier leg failed (${e.message}) — dropping it for this run.`); break; }
         await sleep(ELS_PACE_MS);
       }
@@ -286,6 +298,14 @@ async function main() {
   const withA = Object.values(cache).filter(v => v && v.a).length;
   console.log(`\n✓ Wrote ${CACHE_PATH}`);
   console.log(`  This run: ${checked} DOIs checked, ${found} abstracts found.`);
+  if (ELS_KEY && (elsStats.found + elsStats.empty + elsStats.e404 + elsStats.other)) {
+    console.log(`  Elsevier leg: ${elsStats.found} found, ${elsStats.empty} 200-but-no-abstract, ` +
+      `${elsStats.e404} not-found, ${elsStats.other} other.`);
+    if (elsStats.empty > 20 && elsStats.found < elsStats.empty / 10) {
+      console.log('  ↳ mostly empty responses: the key is likely missing off-campus ABSTRACT entitlement — ' +
+        'request an institutional token (X-ELS-Insttoken) via dev.elsevier.com support and set ELSEVIER_INST_TOKEN.');
+    }
+  }
   console.log(`  Cache now maps ${Object.keys(cache).length} DOIs (${withA} with abstracts).`);
   await applyToPapers();
 }
