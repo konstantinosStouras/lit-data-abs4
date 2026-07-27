@@ -153,9 +153,9 @@ const SELECT = [
 // double-encoded "&lt;sup&gt;2&lt;/sup&gt;" survived as literal markup and
 // every other entity ("&apos;", "&nbsp;", "&EACUTE;") rendered raw.
 import { cleanText as stripJats, trimTrailingSeparators, titleText,
-  affilName, affilParts, affilList } from './_entities.mjs';
+  affilName, affilParts, affilList, stripPageFurniture } from './_entities.mjs';
 import { betterAbstract } from './abstracts-ci.mjs';
-export { stripJats, trimTrailingSeparators, titleText, affilName, affilParts, affilList };
+export { stripJats, trimTrailingSeparators, titleText, affilName, affilParts, affilList, stripPageFurniture };
 
 function yearOf(item) {
   const pick = (d) => d && d['date-parts'] && d['date-parts'][0] && d['date-parts'][0][0];
@@ -251,7 +251,10 @@ function mapWork(item, src) {
     if (af && af.name) affilParts(af.name).forEach((nm) => affSet.add(nm));
   }));
 
-  const abstract = stripJats(item.abstract || '').slice(0, MAX_ABSTRACT);
+  // stripPageFurniture (feedback LIT-260727-XRQ8): a deposited 'abstract' can
+  // be a scraped article-page blob (share bar, 'No abstract is available for
+  // this article.') — never abstract prose; served as '' instead.
+  const abstract = stripPageFurniture(stripJats(item.abstract || '')).slice(0, MAX_ABSTRACT);
 
   // Editors/Areas: Management Science only (per the page's design).
   let editor = '', area = '';
@@ -1379,7 +1382,7 @@ function mergeSupplement(bySource) {
       Volume: '', Issue: '', Page: '',
       Year: year,
       Status: 'Articles in Advance',
-      Abstract: s.Abstract ? stripJats(s.Abstract) : '',
+      Abstract: s.Abstract ? stripPageFurniture(stripJats(s.Abstract)) : '',
       'Accepting Editor': s['Accepting Editor'] || '',
       Area: normArea(s.Area || ''),
       Journal: src.name,

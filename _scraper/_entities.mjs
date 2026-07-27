@@ -152,6 +152,62 @@ export function trimTrailingSeparators(raw) {
   return s;
 }
 
+// Article-page furniture must never be served as an abstract (feedback ticket
+// LIT-260727-XRQ8). Two junk shapes reach the pipelines: (1) the pubsonline
+// page harvest can capture the navigation + "Cited by" block AFTER the real
+// abstract ("… Previous Back to Top Next Figures References Related
+// Information Cited by <citing-article list>"), and (2) Semantic Scholar
+// sometimes serves a scrape of the WHOLE article page — share bar, author
+// links, citation metadata — for items that have no abstract at all
+// ("Journal Article <title> Get access <authors> Search for other works by
+// this author on: Oxford Academic Google Scholar …", U. Chicago's "Previous
+// articleNext article … PDFPDF PLUS Add to favoritesDownload Citation…").
+// stripPageFurniture cuts everything from the first navigation signature on,
+// then rejects (→ '') a remainder that is page chrome rather than abstract
+// prose. Deliberately high-precision, like isNonArticle: the cut anchors on
+// the full "Figures References Related Information" section-label sequence —
+// never on "Back to Top" alone, which could occur inside a real sentence —
+// and the chrome test needs either one unambiguous marker (phrases that can
+// only come from a scraped page) or two weaker ones together. Weak markers
+// alone never reject, so an abstract that legitimately says e.g. "…request
+// permission…" survives. Pure + idempotent; callers keep their existing
+// ≥60-char floor for what counts as a real abstract.
+const FURNITURE_CUT_RE =
+  /(?:(?:Previous\s+)?Back to Top\s+)?(?:Next\s+)?Figures\s*References\s*Related\s*Information/i;
+const CHROME_STRONG_RE = [
+  /ShareShare on/i,
+  /Share on\s*Facebook/i,
+  /PDFPDF/,
+  /AboutSectionsView/i,
+  /Previous articleNext article/i,
+  /Download citation file/i,
+  /Search for other works by this author/i,
+  /Search for more papers by this author/i,
+  /Crossref reports no articles citing this article/i,
+  /No abstract is available for this article/i,
+  /PermissionsReprints/,
+  /View PDF Tools/i,
+  /This article corrects the following/i,
+];
+const CHROME_WEAK_RE = [
+  /Add to favorites/i,
+  /Track citations?\b/i,
+  /Download citations?\b/i,
+  /Published Online\s*:/i,
+  /Article Information\s*Metrics/i,
+  /Request permissions?\b/i,
+  /Export citation\b/i,
+  /First published\s*:/i,
+];
+export function stripPageFurniture(raw) {
+  let s = String(raw == null ? '' : raw);
+  const i = s.search(FURNITURE_CUT_RE);
+  if (i >= 0) s = s.slice(0, i).trim();
+  if (CHROME_STRONG_RE.some((re) => re.test(s))) return '';
+  if (CHROME_WEAK_RE.filter((re) => re.test(s)).length >= 2) return '';
+  return s;
+}
+
 // A title as served: markup/entities cleaned, then any dangling separator trimmed.
 export function titleText(s) { return trimTrailingSeparators(cleanText(s)); }
 

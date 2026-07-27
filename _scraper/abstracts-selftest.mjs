@@ -55,5 +55,17 @@ eq(springerAbstract(null), '', 'null → empty');
 console.log('betterAbstract import path (shared upgrade rule)');
 ok(betterAbstract('', 'y'.repeat(80)), 'empty ← candidate works via the cross-import');
 
+
+console.log('stripPageFurniture guard (feedback LIT-260727-XRQ8)');
+eq(elsevierAbstract({ 'abstracts-retrieval-response': { coredata: { 'dc:description':
+  'Previous articleNext article No AccessSome Paper TitleSome AuthorPDFPDF PLUS Add to favoritesDownload CitationTrack CitationsPermissionsReprints Share onFacebookXLinkedIn' } } }),
+  '', 'a scraped page-chrome blob is rejected, never served as an abstract');
+eq(springerAbstract({ records: [{ abstract: 'Journal Article Some Title Get access A. Author Search for other works by this author on: Oxford Academic Google Scholar' } ] }),
+  '', 'an OUP-style page-header scrape is rejected');
+eq(elsevierAbstract({ 'abstracts-retrieval-response': { coredata: { 'dc:description':
+  'A real abstract that legitimately says firms fight their way back to top positions over time, with enough prose to look like an abstract.' } } }),
+  'A real abstract that legitimately says firms fight their way back to top positions over time, with enough prose to look like an abstract.',
+  '"back to top" inside real prose survives the guard');
+
 console.log(fails ? `\nFAILED (${fails})` : '\nAll FT50 abstract-backfill checks passed.');
 process.exit(fails ? 1 : 0);
