@@ -33,22 +33,22 @@ jobs:
     timeout-minutes: 300
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
 
       - name: Verify journal ISSNs against Crossref (warn-only)
         env:
-          S2_API_KEY: ${{ secrets.S2_API_KEY }}   # optional — moves the S2 leg off the anonymous pool
           FT50_MAILTO: kstouras+abs4@gmail.com
         run: node _scraper/verify-issns.mjs
 
       - name: Build data (Crossref, one pull per journal)
         env:
           FT50_MAILTO: kstouras+abs4@gmail.com   # Crossref "polite pool" contact
+          S2_API_KEY: ${{ secrets.S2_API_KEY }}   # optional — moves the daily S2 citation leg off the anonymous pool
           NODE_OPTIONS: --max-old-space-size=6144
         run: node _scraper/build-data.mjs
 
@@ -63,13 +63,13 @@ jobs:
           fi
           git commit -m "refresh shard data"
           for i in 1 2 3; do
-            if git push origin HEAD:${{ github.ref_name }}; then
+            if git push origin "HEAD:$GITHUB_REF_NAME"; then
               echo "Pushed on attempt $i."
               exit 0
             fi
             echo "Push rejected (concurrent commit?) — re-committing the data on the new tip…"
-            git fetch origin ${{ github.ref_name }}
-            git reset origin/${{ github.ref_name }}
+            git fetch origin "$GITHUB_REF_NAME"
+            git reset "origin/$GITHUB_REF_NAME"
             git add data
             if git diff --cached --quiet; then
               echo "The concurrent commit already contains this dataset — nothing left to push."

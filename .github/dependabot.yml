@@ -1,0 +1,10 @@
+# Bumps the SHA-pinned GitHub Actions by PR when a new release lands, so pinning
+# to an immutable commit never means silently running an outdated action.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
