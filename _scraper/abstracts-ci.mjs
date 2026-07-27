@@ -49,7 +49,7 @@ import { readFile, writeFile, rename } from 'node:fs/promises';
 import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { cleanText } from './_entities.mjs';
+import { cleanText, stripPageFurniture } from './_entities.mjs';
 
 // The shared UPGRADE-only rule + cap, inlined from the site repo's
 // lit/_scraper/informs-abstracts.mjs (keep in sync): a candidate replaces the
@@ -119,7 +119,9 @@ export function elsevierAbstract(body) {
     if (v && typeof v === 'object') { for (const x of Object.values(v)) { const s = firstString(x); if (s) return s; } }
     return '';
   };
-  return cleanText(firstString(d));
+  // stripPageFurniture (feedback LIT-260727-XRQ8): reject a scraped
+  // article-page blob served in place of abstract prose.
+  return stripPageFurniture(cleanText(firstString(d)));
 }
 
 // The abstract out of a Springer Meta API v2 JSON response ({records:[{abstract}]}).
@@ -133,7 +135,7 @@ export function springerAbstract(body) {
     if (v && typeof v === 'object') { for (const x of Object.values(v)) { const s = firstString(x); if (s) return s; } }
     return '';
   };
-  return cleanText(firstString(rec && rec.abstract)).replace(/^Abstract\s+/i, '');
+  return stripPageFurniture(cleanText(firstString(rec && rec.abstract)).replace(/^Abstract\s+/i, ''));
 }
 
 // Merge another cache in: an entry WITH an abstract beats a none-record, a
@@ -188,6 +190,23 @@ async function main() {
   if (MERGE) {
     const took = mergeAbsCache(cache, (await loadJson(MERGE, {})).map || await loadJson(MERGE, {}));
     console.log(`  merge-cache: took ${took} entries from ${MERGE}`);
+  }
+
+  // Heal any furniture-contaminated entry an old run cached (or a stale
+  // merged cache brings back) — feedback LIT-260727-XRQ8: Semantic Scholar
+  // sometimes serves a scrape of the whole article page for items with no
+  // abstract. A cut that leaves a real abstract keeps it; a chrome-only
+  // entry is re-stamped a miss so the TTL retry re-checks it under the guard.
+  {
+    let healed = 0;
+    for (const [k, v] of Object.entries(cache)) {
+      if (!v || !v.a) continue;
+      const t = stripPageFurniture(v.a);
+      if (t === v.a) continue;
+      if (t.length >= 60) cache[k] = { a: t }; else cache[k] = { none: 1, t: day() };
+      healed++;
+    }
+    if (healed) console.log(`  healed ${healed} furniture-contaminated cached abstracts`);
   }
 
   async function saveCache() {
@@ -260,7 +279,7 @@ async function main() {
       if (r.ok) {
         for (const w of (await r.json()).results || []) {
           const doi = String(w.doi || '').replace(/^https?:\/\/doi\.org\//i, '').toLowerCase();
-          const text = cleanText(invertedToText(w.abstract_inverted_index));
+          const text = stripPageFurniture(cleanText(invertedToText(w.abstract_inverted_index)));
           if (doi && text.length >= 60) { cache[doi] = { a: text.slice(0, ABS_MAX) }; unresolved.delete(doi); found++; }
         }
       }
@@ -278,7 +297,7 @@ async function main() {
           const ids = [...unresolved];
           const arr = await r.json();
           arr.forEach((rec, idx) => {
-            const a = rec && typeof rec.abstract === 'string' ? cleanText(rec.abstract) : '';
+            const a = rec && typeof rec.abstract === 'string' ? stripPageFurniture(cleanText(rec.abstract)) : '';
             if (a.length >= 60) { cache[ids[idx]] = { a: a.slice(0, ABS_MAX) }; unresolved.delete(ids[idx]); found++; }
           });
         }
