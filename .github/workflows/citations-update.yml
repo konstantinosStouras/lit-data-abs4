@@ -31,10 +31,10 @@ jobs:
     timeout-minutes: 65
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
 
@@ -66,13 +66,13 @@ jobs:
           cp data/_citations.json /tmp/shard-citations-ours.json
           git commit -m "refresh citation counts"
           for i in 1 2 3; do
-            if git push origin HEAD:${{ github.ref_name }}; then
+            if git push origin "HEAD:$GITHUB_REF_NAME"; then
               echo "Pushed on attempt $i."
               exit 0
             fi
             echo "Push rejected (concurrent commit?) — re-applying our counts on the new tip…"
-            git fetch origin ${{ github.ref_name }}
-            git reset --hard origin/${{ github.ref_name }}
+            git fetch origin "$GITHUB_REF_NAME"
+            git reset --hard "origin/$GITHUB_REF_NAME"
             node _scraper/citations-ci.mjs --apply-only --merge-cache=/tmp/shard-citations-ours.json
             git add data
             if git diff --cached --quiet; then
