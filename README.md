@@ -21,6 +21,12 @@ across data repos. This repo:
   `https://www.stouras.com/lit-data-abs4/data/`, the same origin as the lit
   page, which merges this shard's `data/sources.json` manifest at runtime
   and lazy-loads each `papers-<key>.json` only when a filter needs it.
+  Alongside the capped `data/recent.json` (the rows of the lit page's
+  "Recently added papers" list) the build also writes the tiny, UNCAPPED
+  `data/recent-counts.json` — per journal, per day — which is where that
+  view's "N papers added in the last 4 weeks" number is read from, so a
+  journal joining this shard with its whole back-catalogue is counted in
+  full instead of being cut off by the row cap.
 
 **To add a journal:** verify its ABS grade on journalranking.org, append an
 entry to `_scraper/journals.json` (key, name, ISSNs, publisher, `abs`, and
