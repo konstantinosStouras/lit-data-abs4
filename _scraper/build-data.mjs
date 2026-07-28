@@ -28,6 +28,9 @@
  *   sources.json         manifest: per-journal names, files, counts, flags,
  *                        and each journal's `abs` grade (read by the lit page)
  *   authors.json / affiliations.json / recent.json / meta.json / _registry.json
+ *   recent-counts.json   the UNCAPPED tally behind the lit page's "N papers
+ *                        added in the last 4 weeks" (recent.json itself is
+ *                        capped at RECENT_CAP rows — it ships with the page)
  *
  * Resilience: a failed Crossref pull for one journal (or a pull that suddenly
  * shrinks below half its committed size) never sinks the build — the
@@ -1345,7 +1348,47 @@ function buildRecent(papers, registry) {
     rows.push({ p, d });
   }
   rows.sort((a, b) => (b.d - a.d) || (b.p._rank - a.p._rank) || cmp(regKey(a.p), regKey(b.p)));
+  // Capped: recent.json is fetched with every page load. The count the page
+  // shows does NOT come from these rows — see buildRecentCounts.
   return rows.slice(0, RECENT_CAP).map(x => ({ ...publicRow(x.p), 'Date Added': registry[regKey(x.p)] }));
+}
+
+// The EXACT tally behind the page's "N papers added in the last 4 weeks", as a
+// per-journal x per-day map over the same window recent.json covers.
+//
+// recent.json is capped (it ships with every page load), so on a burst day — a
+// journal joining this shard and depositing its whole back-catalogue at once, a
+// re-registration sweep — its rows are only the newest RECENT_CAP of the window
+// and a count taken from them silently under-reports. This companion is never
+// capped and stays ~1 KB, so the page's number is right however many papers
+// land; it is rewritten on every build, so it also falls when papers are
+// REMOVED. Keyed by JKey, the key the page's journal scope is expressed in.
+// Mirrors lit/_scraper/build-data.mjs in the site repo — keep in sync.
+function buildRecentCounts(papers, registry) {
+  const cutoff = new Date(PULL_DATE + 'T00:00:00');
+  cutoff.setDate(cutoff.getDate() - RECENT_WINDOW_DAYS);
+  const days = {};
+  let total = 0;
+  for (const p of papers) {
+    const ds = registry[regKey(p)];
+    if (!ds) continue;
+    const d = new Date(ds + 'T00:00:00');
+    if (isNaN(d) || d < cutoff) continue;
+    const k = p.JKey || '';
+    if (!k) continue;
+    const perDay = days[k] || (days[k] = {});
+    perDay[ds] = (perDay[ds] || 0) + 1;
+    total++;
+  }
+  // Deterministic (sorted) so an unchanged corpus produces identical bytes and
+  // therefore no needless commit.
+  const sorted = {};
+  for (const k of Object.keys(days).sort()) {
+    const perDay = {};
+    for (const d of Object.keys(days[k]).sort()) perDay[d] = days[k][d];
+    sorted[k] = perDay;
+  }
+  return { generated: PULL_DATE, windowDays: RECENT_WINDOW_DAYS, total, days: sorted };
 }
 
 function publicRow(p) {
@@ -1474,6 +1517,7 @@ async function main() {
   const authors = buildAuthors(allPapers);
   const affiliations = buildAffiliations(allPapers);
   const recent = buildRecent(allPapers, registry);
+  const recentCounts = buildRecentCounts(allPapers, registry);
 
   // 4. Write per-journal paper files + manifest (capability flags included so
   // the page can adapt its filters per journal without hardcoding keys).
@@ -1535,11 +1579,13 @@ async function main() {
   await writeJson('authors.json', authors.rows);
   await writeJson('affiliations.json', affiliations);
   await writeJson('recent.json', recent);
+  await writeJson('recent-counts.json', recentCounts);
   await writeJson('meta.json', meta);
   await writeJson('_registry.json', registry);
 
   console.log(`done: ${total} papers (${sources.map(s => `${s.key}:${s.count}`).join(' ')}), ` +
-    `${authors.rows.length} authors (${authors.distinct} distinct), ${affiliations.length} affiliations, ${recent.length} recent`);
+    `${authors.rows.length} authors (${authors.distinct} distinct), ${affiliations.length} affiliations, ${recent.length} recent ` +
+    `(${recentCounts.total} added in the last ${RECENT_WINDOW_DAYS} days)`);
 }
 
 async function writeJson(name, data) {
