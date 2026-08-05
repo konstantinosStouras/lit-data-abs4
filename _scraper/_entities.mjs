@@ -1,9 +1,9 @@
 /*
  * _entities.mjs — HTML/JATS entity decoding + markup stripping for the text
  * Crossref and OpenAlex deposit (titles, abstracts).
+ * ===========================================================================
  * VENDORED from the site repo's lit/_scraper/_entities.mjs — keep in sync
  * (the same replicated-near-verbatim convention as the pre-print machinery).
- * ===========================================================================
  * Publishers deposit titles and abstracts containing HTML/JATS entities and
  * markup, sometimes DOUBLE-encoded ("&amp;lt;p&amp;gt;"). The page HTML-escapes
  * what it renders, so anything left encoded shows up as literal gibberish —
@@ -37,6 +37,7 @@
  * Offline test (site repo): node lit/_scraper/entities-selftest.mjs
  * ===========================================================================
  */
+import { TITLECASE_WORDS, TITLECASE_PHRASES } from './_titlecase-lexicon.mjs';
 
 // Named entities seen in this catalog plus the common HTML/typography set.
 // Add a name here only when its character is certain.
@@ -208,8 +209,134 @@ export function stripPageFurniture(raw) {
   return s;
 }
 
-// A title as served: markup/entities cleaned, then any dangling separator trimmed.
-export function titleText(s) { return trimTrailingSeparators(cleanText(s)); }
+// An ALL-CAPITALS title is a deposit artifact, not how the paper reads
+// (feedback ticket LIT-260728-TVQ5). Older registrations shout — PNAS's
+// pre-1970s back-catalogue, POM's Wiley years, JoF, TAR, AMJ, IER, Economic
+// Inquiry: "MARKET EQUILIBRIUM", "A PENTAPLOID LARVA OF THE NEWT, TRITURUS
+// VIRIDESCENS". Beyond reading badly on a card it wrecks the BibTeX export,
+// which brace-protects every capital after the first, so the user copies
+// "M{A}{R}{K}{E}{T} {E}{Q}{U}{I}{L}{I}{B}{R}{I}{U}{M}" into their .bib.
+//
+// Scope, per the owner: ONLY all-capitals titles are rewritten. A Title Case
+// title ("Modeling First: Rethinking Undergraduate Operations Management with
+// AI") is how it was published and is left EXACTLY alone — which is why
+// isAllCapsTitle demands the string contain no lowercase letter at all rather
+// than measuring some ratio.
+//
+// Restoring case is not toLowerCase(): acronyms (DNA, CAPM, ANOVA) and proper
+// nouns (Bayesian, Cournot, Drosophila, Japan) must keep their capitals, and an
+// all-caps string carries no evidence of which word is which. That evidence
+// comes from _titlecase-lexicon.mjs, mined from the ~715k properly-cased titles
+// and ~306k abstracts the catalog already holds (see
+// build-titlecase-lexicon.mjs). Anything the lexicon does not know is
+// lowercased — the sentence-case default, and the safe direction: a missed
+// proper noun reads as a small blemish, whereas capitalising by guess would
+// invent names. The import is deliberately STATIC so a shard repo that vendored
+// _entities.mjs without the lexicon fails loudly at import instead of silently
+// lowercasing every acronym in the catalog.
+const TC_TOKEN_RE = /[\p{L}\p{N}][\p{L}\p{N}'’]*/gu;
+// Canonical Roman numeral. It also matches ordinary words ("MIX" = M + IX), so
+// it is only ever consulted right after a numbering word.
+const TC_ROMAN_RE = /^M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$/;
+const TC_NUMBERING = new Set(['volume', 'vol', 'part', 'chapter', 'chap', 'no', 'number', 'book',
+  'series', 'section', 'appendix', 'table', 'figure', 'fig', 'phase', 'type', 'class', 'war',
+  'level', 'stage', 'study', 'experiment']);
+
+// True only for a title that is entirely upper-case, long enough to be prose
+// rather than a bare acronym, and carries at least one word the lexicon does
+// NOT know as an acronym — so "DNA" or "IEEE ACM" is never "corrected", while
+// "DNA AND RNA" is (the word "and" qualifies).
+export function isAllCapsTitle(s) {
+  const t = String(s == null ? '' : s);
+  if (/\p{Ll}/u.test(t)) return false;
+  if ((t.match(/\p{Lu}/gu) || []).length < 8) return false;
+  const words = (t.match(TC_TOKEN_RE) || []).filter((w) => /\p{L}/u.test(w));
+  if (words.length < 2) return false;
+  return words.some((w) => w.length >= 3 && TITLECASE_WORDS[w.toLowerCase()] !== w.toUpperCase());
+}
+
+function tcCapFirst(w) { return w[0].toUpperCase() + w.slice(1); }
+
+// One word's restored form. prevKey/nextCh/prevCh give the little context the
+// ambiguous cases need.
+function tcRecaseWord(w, prevKey, nextCh, prevCh) {
+  const k = w.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(TITLECASE_WORDS, k)) return TITLECASE_WORDS[k];
+  // A possessive is the same word wearing an apostrophe: "CFPB'S" -> "CFPB's",
+  // "NEUMANN'S" -> "Neumann's". The lexicon stores whichever form it saw, so
+  // fall back to the base word when only that is known.
+  const poss = /^(.+)(['’])([Ss])$/.exec(w);
+  if (poss) {
+    const base = TITLECASE_WORDS[poss[1].toLowerCase()];
+    if (base) return base + poss[2] + poss[3].toLowerCase();
+  }
+  if (/^\d+(ST|ND|RD|TH)$/.test(w)) return w.toLowerCase();          // 21ST -> 21st
+  // A word carrying a trailing footnote/superscript digit ("CONTROLLERS1"). The
+  // 4-letter floor keeps short codes — T2, M12, CO2 — out of this branch.
+  const foot = /^(\p{L}{4,})(\d+)$/u.exec(w);
+  if (foot) {
+    const base = foot[1].toLowerCase();
+    return (TITLECASE_WORDS[base] || base) + foot[2];
+  }
+  if (/\p{N}/u.test(w)) return w;                                     // a code: keep verbatim
+  if (w.length === 1) {
+    // "A" is nearly always the article; a single letter followed by "." or
+    // joined by "-" is an initial or a symbol ("E. COLI", "S-CURVE"), as is any
+    // other lone letter ("ON THE VALUE OF X").
+    if (k === 'a' && nextCh !== '.' && nextCh !== '-' && prevCh !== '-') return 'a';
+    return w;
+  }
+  if (TC_ROMAN_RE.test(w) && TC_NUMBERING.has(prevKey)) return w;     // "VOLUME CXXI"
+  return k;
+}
+
+// Rewrite an ALL-CAPS title into sentence case: first letter up, the rest down
+// except acronyms/proper nouns, and a capital again after ':' (also '?', '!'
+// and a sentence-ending '.'). Any other title is returned untouched, so this is
+// pure + idempotent and safe to re-apply on every build.
+export function sentenceCaseTitle(s) {
+  const t = String(s == null ? '' : s);
+  if (!isAllCapsTitle(t)) return t;
+  const ms = [...t.matchAll(TC_TOKEN_RE)];
+  // Multi-word names first, longest run wins: the parts of "UNITED STATES" are
+  // lowercase-dominant on their own, so word-by-word gives "United states".
+  const fixed = new Array(ms.length).fill(null);
+  for (let i = 0; i < ms.length; i++) {
+    if (fixed[i]) continue;
+    for (const n of [3, 2]) {
+      if (i + n > ms.length) continue;
+      const val = TITLECASE_PHRASES[ms.slice(i, i + n).map((m) => m[0].toLowerCase()).join(' ')];
+      if (!val) continue;
+      const parts = val.split(' ');
+      if (parts.length !== n) continue;
+      for (let j = 0; j < n; j++) fixed[i + j] = parts[j];
+      i += n - 1;
+      break;
+    }
+  }
+  let out = '', last = 0, boundary = true, prevWord = '', prevKey = '';
+  for (let i = 0; i < ms.length; i++) {
+    const w = ms[i][0], gap = t.slice(last, ms[i].index);
+    out += gap;
+    // Quotes and brackets may sit on either side of the punctuation — a closing
+    // one before it ("…HIGHER EDUCATION?’ AN ECONOMIC…"), an opening one after
+    // it — so any run of them still leaves the next word starting a sentence.
+    if (last !== 0 && /[:?!][\s"“”'‘’()[\]]*$/.test(gap)) boundary = true;
+    // A '.' ends a sentence only after a real word — never after an initial,
+    // so "E. COLI" stays "E. coli" and "U.S." is left alone.
+    else if (last !== 0 && /\.[\s"“”'‘’()[\]]*$/.test(gap) && prevWord.length >= 2) boundary = true;
+    const end = ms[i].index + w.length;
+    let form = fixed[i] || tcRecaseWord(w, prevKey, t.charAt(end), t.charAt(ms[i].index - 1));
+    if (boundary && /\p{Ll}/u.test(form[0])) form = tcCapFirst(form);
+    out += form;
+    prevWord = w; prevKey = w.toLowerCase(); boundary = false; last = end;
+  }
+  return out + t.slice(last);
+}
+
+// A title as served: markup/entities cleaned, any dangling separator trimmed,
+// then an all-capitals deposit brought back to sentence case.
+export function titleText(s) { return sentenceCaseTitle(trimTrailingSeparators(cleanText(s))); }
 
 // One affiliation name as served (the page splits Affiliations on ';').
 export function affilName(s) { return trimTrailingSeparators(cleanText(s)); }
