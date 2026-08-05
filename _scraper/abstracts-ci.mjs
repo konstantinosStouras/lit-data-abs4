@@ -49,7 +49,15 @@ import { readFile, writeFile, rename } from 'node:fs/promises';
 import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { cleanText, stripPageFurniture } from './_entities.mjs';
+import { cleanText, stripPageFurniture, junkAbstract } from './_entities.mjs';
+
+// junkAbstract (user report 2026-08): OpenAlex/S2 mirror the publisher's
+// Crossref deposit, so for a paper whose deposit is an editorial plain-language
+// summary or a citation-line stub the APIs serve the SAME junk back — each leg
+// must reject it against the row's own title/authors or the backfill would
+// reinstate exactly what the build guard dropped. (No practitioner-journal
+// exemptions in this catalog, unlike the FT50 pipeline's HBR/SMR set.)
+const rowGuardCtx = (row) => ({ title: row.Title, authors: row.Authors, journal: row.Journal });
 
 // The shared UPGRADE-only rule + cap, inlined from the site repo's
 // lit/_scraper/informs-abstracts.mjs (keep in sync): a candidate replaces the
@@ -216,19 +224,29 @@ async function main() {
   }
 
   async function applyToPapers() {
-    let total = 0;
+    let total = 0, junked = 0;
     for (const f of paperFiles()) {
       const p = join(DATA_DIR, f);
       const rows = await loadJson(p, null);
       if (!rows) continue;
       let up = 0;
       for (const row of rows) {
-        const rec = cache[bareDoi(row)];
+        const doi = bareDoi(row);
+        const rec = cache[doi];
         if (!rec || !rec.a) continue;
+        // A junk "abstract" cached before the guard existed (an API copy of a
+        // publisher summary/citation-stub deposit) is never applied and is
+        // re-stamped a TTL miss so it is re-resolved under the guard.
+        if (junkAbstract(rec.a, rowGuardCtx(row))) {
+          cache[doi] = { none: 1, t: day() };
+          junked++;
+          continue;
+        }
         if (betterAbstract(row.Abstract, rec.a)) { row.Abstract = rec.a.slice(0, ABS_MAX); up++; }
       }
       if (up) { await awrite(p, JSON.stringify(rows)); total += up; console.log(`  ${f}: upgraded ${up} abstracts`); }
     }
+    if (junked) { console.log(`  re-stamped ${junked} junk cached "abstracts" as misses`); await saveCache(); }
     console.log(total
       ? `✓ Applied the API cache to the served FT50 papers files (${total} abstracts).`
       : '  FT50 papers files already carry every cached abstract — nothing to apply.');
@@ -243,12 +261,14 @@ async function main() {
   // Needy list: every FT50 row with a missing/stub abstract, newest first,
   // skipping cached hits and fresh misses.
   const needy = [];
+  const rowMeta = new Map();
   for (const f of paperFiles()) {
     const rows = await loadJson(join(DATA_DIR, f), []);
     for (const row of rows) {
       if (!isNeedy(row)) continue;
       const doi = bareDoi(row);
       if (!doi) continue;
+      if (!rowMeta.has(doi)) rowMeta.set(doi, rowGuardCtx(row));
       const cur = cache[doi];
       if (cur && cur.a) continue;
       if (cur && cur.none && (day() - (cur.t || 0)) < MISS_TTL_DAYS &&
@@ -259,6 +279,10 @@ async function main() {
   }
   needy.sort((a, b) => b.y - a.y);
   console.log(`${needy.length} FT50 papers need an abstract (missing/stub, cache-eligible).`);
+  const junkForDoi = (doi, text) => {
+    const m = rowMeta.get(doi);
+    return m ? junkAbstract(text, m) : '';
+  };
   if (DRY) return;
 
   let s2ok = USE_S2, elsOk = true, found = 0, checked = 0, batches = 0;
@@ -280,7 +304,7 @@ async function main() {
         for (const w of (await r.json()).results || []) {
           const doi = String(w.doi || '').replace(/^https?:\/\/doi\.org\//i, '').toLowerCase();
           const text = stripPageFurniture(cleanText(invertedToText(w.abstract_inverted_index)));
-          if (doi && text.length >= 60) { cache[doi] = { a: text.slice(0, ABS_MAX) }; unresolved.delete(doi); found++; }
+          if (doi && text.length >= 60 && !junkForDoi(doi, text)) { cache[doi] = { a: text.slice(0, ABS_MAX) }; unresolved.delete(doi); found++; }
         }
       }
     } catch (e) { console.warn(`  OpenAlex batch failed: ${e.message}`); }
@@ -298,7 +322,7 @@ async function main() {
           const arr = await r.json();
           arr.forEach((rec, idx) => {
             const a = rec && typeof rec.abstract === 'string' ? stripPageFurniture(cleanText(rec.abstract)) : '';
-            if (a.length >= 60) { cache[ids[idx]] = { a: a.slice(0, ABS_MAX) }; unresolved.delete(ids[idx]); found++; }
+            if (a.length >= 60 && !junkForDoi(ids[idx], a)) { cache[ids[idx]] = { a: a.slice(0, ABS_MAX) }; unresolved.delete(ids[idx]); found++; }
           });
         }
       } catch (e) { s2ok = false; console.warn(`  Semantic Scholar leg failed (${e.message}) — dropping it for this run.`); }
@@ -322,7 +346,7 @@ async function main() {
           }
           if (r.ok) {
             const text = elsevierAbstract(await r.json());
-            if (text.length >= 60) { cache[doi] = { a: text.slice(0, ABS_MAX) }; unresolved.delete(doi); found++; elsStats.found++; }
+            if (text.length >= 60 && !junkForDoi(doi, text)) { cache[doi] = { a: text.slice(0, ABS_MAX) }; unresolved.delete(doi); found++; elsStats.found++; }
             else elsStats.empty++;
           } else if (r.status === 404) elsStats.e404++;
           else elsStats.other++;
@@ -344,7 +368,7 @@ async function main() {
           }
           if (r.ok) {
             const text = springerAbstract(await r.json());
-            if (text.length >= 60) { cache[doi] = { a: text.slice(0, ABS_MAX) }; unresolved.delete(doi); found++; sprStats.found++; }
+            if (text.length >= 60 && !junkForDoi(doi, text)) { cache[doi] = { a: text.slice(0, ABS_MAX) }; unresolved.delete(doi); found++; sprStats.found++; }
             else sprStats.empty++;
           } else sprStats.other++;
         } catch (e) { sprOk = false; console.warn(`  Springer leg failed (${e.message}) — dropping it for this run.`); break; }

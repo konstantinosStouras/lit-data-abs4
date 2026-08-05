@@ -334,6 +334,124 @@ export function sentenceCaseTitle(s) {
   return out + t.slice(last);
 }
 
+// A publisher-deposited "abstract" that is NOT the paper's abstract must never
+// be served as one (user report 2026-08: every recent Operations Research card
+// showed an editorial plain-language summary — a headline plus "In '<Title>',
+// <the authors> develop…" — instead of the real abstract; INFORMS deposits
+// these blurbs to Crossref for many OR / IJOC / ISR / MS papers, and OpenAlex/
+// Semantic Scholar mirror the same text, so no API leg can "fix" it). A second
+// junk shape is the CITATION-LINE stub: AEA deposits "<Title> by <Authors>.
+// Published in volume 95, issue 4, pages 1300-1309 of American Economic
+// Review…" and many JSTOR/OUP-era records carry "<Authors>, <Title>,
+// <Journal>, Vol. 14, No. 4 (Dec., 1969), pp. 595-606" as the abstract.
+//
+// Both detectors are HIGH-PRECISION and context-aware: they see the row's own
+// title/authors/journal, which is what separates a summary (names its OWN
+// authors in the third person, quotes its OWN title) from a real abstract
+// (first-person prose that never does either — except inside the Funding /
+// Conflict-of-Interest / "This paper was accepted by" tail INFORMS appends,
+// which is cut before author names are counted). Deliberate non-matches:
+//   • errata / replies / comments / reviews-of-a-book — their notice text
+//     legitimately cites the discussed work (SELF_REF/META_NOTICE guards);
+//   • IJOC "Code and Data Repository for …" companion items, whose deposited
+//     description really is "…used in the research reported in <paper> by
+//     <authors>" (REPO guard);
+//   • real abstracts that merely say "the authors" without naming them
+//     (Journal of Marketing style) — an author NAME in the body is required.
+// Callers additionally exempt HBR / MIT Sloan Management Review: practitioner
+// pieces have no author abstract, so the third-person deck IS the journal's
+// own summary text and stays.
+const SUMMARY_TAIL_RE =
+  /(?:This paper was accepted by|Funding:|Supplemental Material:|Disclaimer:|History:|Conflict of Interest|Data Ethics|Author Contributions?:|Acknowledgm)/;
+const SELF_REF_TITLE_RE =
+  /^\s*(?:errat|corrigend|correction|response to|reply to|comment on|rejoinder|in memoriam|obituary|two contributions)/i;
+const REPO_TITLE_RE = /^\s*(?:code|data|software)\b.*\brepositor/i;
+const META_NOTICE_RE =
+  /^\s*(?:abstract[\s:.–—-]*)?(?:a review is presented|a letter is presented|the article presents|this article presents|a correction (?:is|to)|comments? on)/i;
+
+// Diacritic-folded, lowercased, punctuation collapsed to single spaces — so
+// "Zuo-Jun (Max) Shen" matches "Zuo‐Jun (Max) Shen" and a curly-quoted title
+// matches its plain-quoted copy.
+function foldPlain(s) {
+  return String(s == null ? '' : s).normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+export function isLaySummaryAbstract(abstract, title, authors) {
+  const a = String(abstract == null ? '' : abstract);
+  if (a.length < 100) return false;
+  const ti = String(title == null ? '' : title);
+  if (SELF_REF_TITLE_RE.test(ti) || REPO_TITLE_RE.test(ti)) return false;
+  if (META_NOTICE_RE.test(a)) return false;
+  const cut = a.search(SUMMARY_TAIL_RE);
+  const body = cut >= 0 ? a.slice(0, cut) : a;
+  const fb = ' ' + foldPlain(body) + ' ';
+  const ft = foldPlain(ti);
+  // Own-author full names appearing in the body OUTSIDE the title text itself
+  // (a title like "Response to Commentary by John C. Pollard" must not count
+  // its own repetition as a third-person author mention).
+  const fbNoTitle = ft.length >= 15 ? fb.split(' ' + ft + ' ').join('  ') : fb;
+  let au = 0;
+  for (const nm of String(authors == null ? '' : authors).split(',')) {
+    const fn = foldPlain(nm);
+    if (fn.length >= 8 && /\s/.test(fn) && fbNoTitle.includes(' ' + fn + ' ')) au++;
+  }
+  if (!au) return false;
+  const strong =
+    /\bIn their (?:new |recent )?(?:paper|study|article|research|work)\b/i.test(body) ||
+    /\bThe (?:authors|researchers)\b/i.test(body) ||
+    /\b(?:a|this) (?:new|recent) (?:study|research|paper) (?:by|shows|suggests|finds|reveals|demonstrates|examines|explores)\b/i.test(body) ||
+    /\b(?:study|paper|article|research) (?:by|titled|entitled)\b/i.test(body) ||
+    /\bnew research (?:shows|suggests|finds|reveals|demonstrates|examines)\b/i.test(body);
+  // The classic OR-blurb construction: the own title cited mid-prose right
+  // after "In …" / "the paper …" ("In 'Post Reinforcement Learning
+  // Inference,' Vasilis Syrgkanis and Ruohan Zhan develop …").
+  let titleHit = false, titleNear = false;
+  if (ft.length >= 20) {
+    let idx = fb.indexOf(' ' + ft + ' ');
+    titleHit = idx >= 0;
+    while (idx >= 0 && !titleNear) {
+      const before = fb.slice(Math.max(0, idx - 30), idx + 1);
+      if (/\b(?:paper|study|article|research|titled|entitled|in)\s$/.test(before)) titleNear = true;
+      idx = fb.indexOf(' ' + ft + ' ', idx + 1);
+    }
+  }
+  if (au >= 2 && (strong || titleHit)) return true;
+  if (au >= 1 && titleNear) return true;
+  return false;
+}
+
+export function isCitationStubAbstract(abstract, title, journal) {
+  const a = String(abstract == null ? '' : abstract).trim();
+  if (a.length < 40 || a.length > 700) return false;
+  const fa = ' ' + foldPlain(a) + ' ';
+  const ft = foldPlain(title);
+  const titleHit = ft.length >= 15 && fa.includes(' ' + ft + ' ');
+  // AEA shape: "<Title> by <Authors>. Published in volume 95, issue 4, pages
+  // 1300-1309 of American Economic Review, September 2005".
+  if (/\bby .{2,300}?Published in volume \d+, issue [\dA-Za-z]+, pages \d+/s.test(a)) {
+    return titleHit || ft.length < 15;
+  }
+  // JSTOR shape: "<Authors>, <Title>, <Journal>, Vol. 14, No. 4 (Dec., 1969),
+  // pp. 595-606" — needs the own title AND journal name AND the page range
+  // anchored at the very end, so a real abstract that merely cites something
+  // can never match.
+  const fj = foldPlain(journal);
+  if (titleHit && fj && fj.length >= 8 && fa.includes(' ' + fj + ' ') &&
+      /\bVol\.?\s*\d+/i.test(a) && /\bpp?\.\s*[\divxlc]+\s*[-–—]\s*\d+\.?\s*$/i.test(a)) {
+    return true;
+  }
+  return false;
+}
+
+// Convenience wrapper for the ingest guards: '' (serve it) or the junk kind.
+export function junkAbstract(abstract, ctx) {
+  const { title, authors, journal } = ctx || {};
+  if (isLaySummaryAbstract(abstract, title, authors)) return 'summary';
+  if (isCitationStubAbstract(abstract, title, journal)) return 'stub';
+  return '';
+}
+
 // A title as served: markup/entities cleaned, any dangling separator trimmed,
 // then an all-capitals deposit brought back to sentence case.
 export function titleText(s) { return sentenceCaseTitle(trimTrailingSeparators(cleanText(s))); }
