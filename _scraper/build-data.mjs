@@ -360,6 +360,48 @@ async function applyInformsEditors(bySource) {
   if (filled) console.log(`  informs editors: filled ${filled} SE/AE fields from the cache`);
 }
 
+// A row still waiting for its issue: no volume/issue AND a forthcoming Status
+// ('Articles in Advance' / Articles in Press). An old no-volume record whose
+// Crossref entry simply froze at the advance stage carries no Status
+// (forthcomingStatus) and is a published paper, not a forthcoming one — it
+// never counts here. Vendored from lit/_scraper-ft50/build-data.mjs — keep in sync.
+function isForthcomingRow(p) {
+  return !p.Volume && !p.Issue && !!p.Status;
+}
+
+// An un-dated paper is announced when it is published. The onboarding rule
+// (updateRegistry) leaves a back-catalogue row un-dated ('') on purpose — but a
+// paper that was ALREADY an advance article when it was onboarded later moved
+// into its issue with nothing more than a bibliographic refresh, so neither
+// event ever reached "recently added". A row that gains its volume/issue while
+// its registry entry is still '' is stamped with the pull date; a row that
+// already carries a date keeps it — announced once, never twice. `rows` are
+// the rows that were forthcoming before this run and are published now.
+// Vendored from lit/_scraper-ft50/build-data.mjs — keep in sync.
+function stampPublished(rows, regMap) {
+  let n = 0;
+  for (const p of rows) {
+    const k = regKey(p);
+    if (regMap[k] === '') { regMap[k] = PULL_DATE; n++; }
+  }
+  if (n) console.log(`  registry: ${n} un-dated paper(s) reached their issue — announced under "recently added" as of ${PULL_DATE}`);
+  return n;
+}
+
+// The DOIs of the committed rows that are still forthcoming, read BEFORE a full
+// build replaces every journal from the fresh harvest.
+async function loadForthcomingDois(journals) {
+  const set = new Set();
+  for (const src of journals) {
+    const rows = await loadJsonIfExists(join(DATA_DIR, `papers-${src.key}.json`), []);
+    if (!Array.isArray(rows)) continue;
+    for (const p of rows) {
+      if (p && p.DOI && isForthcomingRow(p)) set.add(String(p.DOI).replace(/^https?:\/\/doi\.org\//i, '').toLowerCase());
+    }
+  }
+  return set;
+}
+
 function pubRank(year, volume, issue, page, status) {
   const aia = status ? 1 : 0; // any non-published status ranks above published
   const y = parseInt(year, 10) || 0;
@@ -1461,6 +1503,10 @@ async function main() {
 
   const bySource = {}; // key -> rows (internal shape)
 
+  // The committed rows still waiting for their issue, read BEFORE the fresh
+  // harvest replaces them: a paper that gains its volume/issue in this build
+  // and never carried a first-seen date is announced today (stampPublished).
+  const forthcomingBefore = await loadForthcomingDois(LOCAL_JOURNALS);
   // 1. Pull all locally-hosted journals, sequentially (politeness + bounded
   // memory). Sharded journals are pulled by their own satellite pipelines.
   for (const src of LOCAL_JOURNALS) {
@@ -1523,6 +1569,7 @@ async function main() {
   await applyAbstractCaches(allPapers);
 
   const registry = updateRegistry(bySource, reg);
+  stampPublished(allPapers.filter(p => p._doi && forthcomingBefore.has(p._doi) && (p.Volume || p.Issue)), registry);
 
   const authors = buildAuthors(allPapers);
   const affiliations = buildAffiliations(allPapers);
