@@ -156,9 +156,9 @@ const SELECT = [
 // double-encoded "&lt;sup&gt;2&lt;/sup&gt;" survived as literal markup and
 // every other entity ("&apos;", "&nbsp;", "&EACUTE;") rendered raw.
 import { cleanText as stripJats, trimTrailingSeparators, titleText,
-  affilName, affilParts, affilList, stripPageFurniture, junkAbstract } from './_entities.mjs';
+  affilName, affilParts, affilList, stripPageFurniture, junkAbstract, stripHighlights } from './_entities.mjs';
 import { betterAbstract } from './abstracts-ci.mjs';
-export { stripJats, trimTrailingSeparators, titleText, affilName, affilParts, affilList, stripPageFurniture, junkAbstract };
+export { stripJats, trimTrailingSeparators, titleText, affilName, affilParts, affilList, stripPageFurniture, junkAbstract, stripHighlights };
 
 function yearOf(item) {
   const pick = (d) => d && d['date-parts'] && d['date-parts'][0] && d['date-parts'][0][0];
@@ -261,7 +261,11 @@ function mapWork(item, src) {
   // (INFORMS-style blurbs naming the paper's own authors) or a bare
   // citation-line stub deposited as the abstract is never served as one —
   // dropped, so the API backfill can fill the real text.
-  let abstract = stripPageFurniture(stripJats(item.abstract || '')).slice(0, MAX_ABSTRACT);
+  // stripHighlights (user report 2026-08): Elsevier deposits many papers'
+  // ScienceDirect HIGHLIGHTS bullets as (or fused into) the abstract — the
+  // real abstract is kept when it precedes the bullets, else dropped so the
+  // backfills recover the true text. Vendored from the FT50 mapWork.
+  let abstract = stripHighlights(stripPageFurniture(stripJats(item.abstract || '')).slice(0, MAX_ABSTRACT));
   if (abstract && junkAbstract(abstract,
     { title, authors: authorsArr.join(', '), journal: src.name })) abstract = '';
 
@@ -1216,7 +1220,12 @@ async function applyAbstractCaches(allPapers) {
     if (!rec || !rec.a) continue;
     // A cached capture that is itself a summary/citation stub is never applied.
     if (junkAbstract(rec.a, { title: row.Title, authors: row.Authors, journal: row.Journal })) continue;
-    if (betterAbstract(row.Abstract, rec.a)) { row.Abstract = rec.a.slice(0, MAX_ABSTRACT); up++; }
+    // Nor a cached HIGHLIGHTS bullet capture (abstracts-ci heals the cache
+    // file on its own cadence; this guards the window in between — and keeps
+    // any real abstract the entry carries ahead of its bullets).
+    const cand = stripHighlights(rec.a);
+    if (!cand) continue;
+    if (betterAbstract(row.Abstract, cand)) { row.Abstract = cand.slice(0, MAX_ABSTRACT); up++; }
   }
   if (up) console.log(`  abstracts: upgraded ${up} teaser/missing abstracts from the API cache`);
 }
@@ -1475,7 +1484,7 @@ function mergeSupplement(bySource) {
       Volume: '', Issue: '', Page: '',
       Year: year,
       Status: 'Articles in Advance',
-      Abstract: s.Abstract ? stripPageFurniture(stripJats(s.Abstract)) : '',
+      Abstract: s.Abstract ? stripHighlights(stripPageFurniture(stripJats(s.Abstract))) : '',
       'Accepting Editor': s['Accepting Editor'] || '',
       Area: normArea(s.Area || ''),
       Journal: src.name,
