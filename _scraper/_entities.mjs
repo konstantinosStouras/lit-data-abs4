@@ -484,3 +484,36 @@ export function affilList(s) {
   }
   return cur;
 }
+
+// ── ScienceDirect "Highlights" are never served as the abstract ─────────────
+// Elsevier deposits many papers' author HIGHLIGHTS — the 3-5 short bullet
+// points ScienceDirect shows above the abstract — as (or fused into) the
+// Crossref abstract field (user report 2026-08: ~170 EJOR + ~120 Research
+// Policy rows read "• A new measure capturing fairness… • We provide…" in
+// place of the abstract; OpenAlex/S2 mirror the same deposit into the API
+// backfill's cache). Once JATS is flattened the section labels are mostly
+// gone, so the shape itself is the signal:
+//   • prose (≥250 chars) BEFORE the first bullet = the real abstract with the
+//     highlights appended — KEEP the prose, cut the bullets (the common EJOR
+//     deposit, ~60% of affected rows);
+//   • text STARTING with the bullet block (bare, "Highlights"-labelled, or
+//     led by the paper's own title) — the real abstract may be fused into the
+//     last bullet with NO separator, and there is no safe seam to cut at, so
+//     the whole text is dropped ('' → the row is "needy" again and the
+//     rolling backfills re-resolve the true abstract; same discipline as
+//     stripPageFurniture/junkAbstract: no abstract beats a wrong one).
+// High-precision guards: fewer than 2 bullets is never a highlights block (a
+// lone mid-prose '•' survives), and if any INNER inter-bullet segment runs
+// long (>250 chars) the text is prose that legitimately uses bullets and is
+// left untouched. Pure + idempotent, so every ingest re-applies safely.
+export function stripHighlights(raw) {
+  const text = String(raw == null ? '' : raw).trim();
+  if (!text) return '';
+  const parts = text.split('•');
+  if (parts.length < 3) return text;             // fewer than 2 bullets
+  const inner = parts.slice(1, -1).map(s => s.trim());
+  if (inner.some(s => s.length > 250)) return text;
+  const lead = parts[0].trim().replace(/\s*Highlights?\s*[:.]?\s*$/i, '').trim();
+  if (lead.length >= 250) return lead;           // abstract-then-highlights
+  return '';                                     // bullets-first: no safe seam
+}

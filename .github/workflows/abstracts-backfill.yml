@@ -3,8 +3,9 @@ name: backfill abstracts (lit-data-abs4)
 # Fills missing/stub abstracts across this shard (data/) from OpenAlex
 # (abstract_inverted_index, batched 50/call), an optional Semantic Scholar leg
 # (500 DOIs/POST; drops out on throttle; S2_API_KEY moves it off the anonymous
-# pool) and — when the ELSEVIER_API_KEY secret is set — Elsevier's Abstract
-# Retrieval API for 10.1016/… DOIs, the bulk of this shard's missing abstracts.
+# pool) and — when the ELSEVIER_API_KEY + ELSEVIER_INST_TOKEN secrets are set —
+# Elsevier's Scopus Search (batched) and Abstract Retrieval (per DOI) APIs for
+# 10.1016/… DOIs, the bulk of this shard's missing abstracts.
 # Most of these journals deposit no abstract (or a stub) to Crossref, so the
 # daily build alone leaves most rows without one. Runs bounded ~40-min slices,
 # newest papers first, into data/_api-abstracts.json, and applies UPGRADE-only
@@ -42,13 +43,19 @@ jobs:
       - name: Backfill abstracts (bounded slice, newest first)
         env:
           FT50_ABS_BUDGET_MS: '2400000'
-          # Optional keys — both legs stay inert/anonymous until the secret is
-          # set on THIS repo (secrets are per-repo). ELSEVIER_API_KEY (a free
-          # institutional key from dev.elsevier.com) unlocks the Abstract
-          # Retrieval leg for 10.1016/… DOIs; S2_API_KEY moves the Semantic
-          # Scholar leg off the throttled anonymous pool.
+          # Optional keys — every keyed leg stays inert until its secret is set
+          # on THIS repo (secrets are per-repo). ELSEVIER_API_KEY (a free key
+          # from dev.elsevier.com) + ELSEVIER_INST_TOKEN (the institutional
+          # token Elsevier support issues for server-side use) unlock the two
+          # Elsevier legs for 10.1016/… DOIs: Scopus Search batched (25 DOIs/
+          # GET) and per-DOI Abstract Retrieval. The token is sent ONLY as the
+          # X-ELS-Insttoken header over https, never in a URL or a log line —
+          # its terms of use (the site repo's lit/_ELSEVIER-ABSTRACTS-SETUP.md).
+          # Without it Elsevier answers with metadata and no abstract text
+          # off-campus. S2_API_KEY moves the Semantic Scholar leg off the
+          # throttled anonymous pool.
           ELSEVIER_API_KEY: ${{ secrets.ELSEVIER_API_KEY }}
-          ELSEVIER_INST_TOKEN: ${{ secrets.ELSEVIER_INST_TOKEN }}   # optional off-campus entitlement token
+          ELSEVIER_INST_TOKEN: ${{ secrets.ELSEVIER_INST_TOKEN }}
           SPRINGER_API_KEY: ${{ secrets.SPRINGER_API_KEY }}   # optional — the Meta API key (abstracts for Springer/Palgrave/Kluwer DOIs)
           S2_API_KEY: ${{ secrets.S2_API_KEY }}
         run: node _scraper/abstracts-ci.mjs
