@@ -11,13 +11,14 @@
  * Run: node _scraper/abstracts-selftest.mjs
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { invertedToText, mergeAbsCache, isNeedy, elsevierAbstract, springerAbstract, shouldStampMiss,
   credentialTier, missIsFresh, missStamp, elsAnswerIsDefinitive, scopusDoiQuery, scopusAbstracts,
   readRateLimit, elsErrorText, isRecentYear, headerSafeValue, ELS_PREFIX, SPR_PREFIX, main, betterAbstract } from './abstracts-ci.mjs';
+import { readChunkedJsonSync } from './_chunked-json.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const HERE = dirname(SELF);
@@ -275,6 +276,33 @@ if (process.env.ABS_SCENARIO) {
         eq(rows.find(r => r.DOI === E3).Abstract, TXT('Merged E3.'), 'and applied to the papers row');
       },
     },
+    // The cache outgrows its per-part cap: it is written in PARTS (so a push
+    // can never carry a file over GitHub's 100 MiB limit — three
+    // lit-data-abs3-omecon runs did all their work and had every push
+    // rejected at 102.41 MB), every part is read back, and a MULTI-PART merge
+    // copy hands over the finds in its later parts too (the workflow's
+    // push-retry replay copies the whole set, not just the first file).
+    'chunked': {
+      cache: Object.fromEntries(Array.from({ length: 40 }, (_, i) =>
+        [`10.1016/j.ejor.2014.09.${String(i + 1).padStart(3, '0')}`, { a: TXT(`Bulk ${i + 1}.`) }])),
+      before: (dir) => {
+        writeFileSync(join(dir, 'ours.json'), JSON.stringify({ [E1]: { a: TXT('Merged from part 1.') } }));
+        writeFileSync(join(dir, 'ours-2.json'), JSON.stringify({ [E3]: { a: TXT('Merged from part 2.') } }));
+      },
+      argv: (dir) => ['--apply-only', `--merge-cache=${join(dir, 'ours.json')}`],
+      scopus: () => json({}, 500), abstract: () => json({}, 500),
+      check: (cache, rows) => {
+        ok(existsSync(join(DIR, '_api-abstracts-2.json')), 'the cache was split: a second part exists on disk');
+        const part1 = JSON.parse(readFileSync(join(DIR, '_api-abstracts.json'), 'utf8'));
+        ok(Object.keys(part1).length < 42, 'part 1 alone does not hold the whole cache');
+        eq(Object.keys(cache).length, 42, 'every entry survives the split (40 seeded + 2 merged)');
+        eq((cache[E1] || {}).a, TXT('Merged from part 1.'), "the merge copy's first part was taken");
+        eq((cache[E3] || {}).a, TXT('Merged from part 2.'), "and so was its SECOND part");
+        eq(rows.find(r => r.DOI === E3).Abstract, TXT('Merged from part 2.'), 'a find from a later merge part reaches the papers row');
+        const bulk = '10.1016/j.ejor.2014.09.040';
+        eq((cache[bulk] || {}).a, TXT('Bulk 40.'), 'a seeded entry that the split moved into a later part is still there');
+      },
+    },
     // The time budget runs out while the batched legs are still answering:
     // nothing keyed was tried, so nothing keyed is stamped.
     'budget-mid': {
@@ -392,7 +420,9 @@ if (process.env.ABS_SCENARIO) {
   if (scen.argv) process.argv.push(...scen.argv(DIR));
   console.log(`  [scenario ${name}]`);
   await main();
-  const cache = JSON.parse(readFileSync(join(DIR, '_api-abstracts.json'), 'utf8'));
+  // Read through every PART: the cache is chunked, and checking part 1 alone
+  // would pass vacuously on whatever the split moved into part 2.
+  const cache = readChunkedJsonSync(join(DIR, '_api-abstracts.json'), {});
   const outRows = JSON.parse(readFileSync(join(DIR, 'papers-ejor.json'), 'utf8'));
   scen.check(cache, outRows);
   console.log(fails ? `  scenario ${name}: FAILED (${fails})` : `  scenario ${name}: passed`);
@@ -599,6 +629,33 @@ console.log('source pin: the institutional token and key travel only as request 
   ok((src.match(/https:\/\/api\.elsevier\.com/g) || []).length >= 2 && !/http:\/\/api\.elsevier\.com/.test(src), 'every Elsevier endpoint is https');
 }
 
+// ── Every OTHER reader of this cache reads it through all its PARTS ─────────
+// The cache is chunked, so a sibling that JSON.parses the first file alone
+// silently drops every abstract the split moved into a later part — and the
+// symptom (a paper losing an abstract it had) looks nothing like the cause.
+// Pinned by source, because the daily build's read has no offline harness.
+console.log('the cache is read through every part wherever it is read');
+{
+  const pin = (label, file, marker, wanted) => {
+    if (!existsSync(file)) { ok(false, `${label}: found on disk`); return; }
+    const src = readFileSync(file, 'utf8');
+    const at = src.indexOf(marker);
+    if (at < 0) { ok(false, `${label}: the marker "${marker}" is still there`); return; }
+    // A slice taken on a marker that moved passes every negative check by
+    // vacuity, so the slice's own size is asserted first.
+    const slice = src.slice(at, at + 2500);
+    ok(slice.length > 500, `${label}: the slice really is the block (${slice.length} chars)`);
+    ok(wanted.test(slice), `${label}: reads the cache through every part`);
+  };
+  pin('the daily build (applyAbstractCaches)', join(HERE, 'build-data.mjs'),
+    'async function applyAbstractCaches', /readChunkedJson\(/);
+  const cleaner = [join(HERE, 'clean-junk-abstracts.mjs'), join(HERE, '..', '_scraper', 'clean-junk-abstracts.mjs')]
+    .find((f) => existsSync(f));
+  ok(!!cleaner, 'clean-junk-abstracts.mjs found (beside this test or in the shared scraper dir)');
+  if (cleaner) pin('clean-junk-abstracts', cleaner, "const apiCachePath",
+    /readChunkedJsonSync\([\s\S]*writeChunkedJson\(/);
+}
+
 // ── Whole-run scenarios (parent side) ───────────────────────────────────────
 console.log('whole-run scenarios against a stubbed fetch (child processes)');
 const EXPECT_STDOUT = {
@@ -611,16 +668,19 @@ const EXPECT_STDOUT = {
   'quota-spent': /::notice::\d+ Elsevier DOIs were left uncached this run/,
   'openalex-429': /OpenAlex throttled \(HTTP 429\) — ending the run cleanly/,
   'heal-restamp': /healed 1 furniture\/highlights-contaminated cached abstracts/,
+  // The run says where the cache went when it needed more than one part.
+  'chunked': /merge-cache: took 2 entries from/,
 };
 const SCENARIOS = ['token', 'scopus-refused', 'key-only', 'scopus-400-fallback', 'quota-spent', 'token-no-text', 'scopus-empty-streak',
-  'throttle-429', 'fetch-throws', 'springer', 'no-key', 'merge-apply', 'budget-mid', 'openalex-429', 'heal-restamp', 'scopus-mixed'];
+  'throttle-429', 'fetch-throws', 'springer', 'no-key', 'merge-apply', 'budget-mid', 'openalex-429', 'heal-restamp', 'scopus-mixed',
+  'chunked'];
 for (const name of SCENARIOS) {
   const dir = mkdtempSync(join(tmpdir(), `lit-abs-${name}-`));
   const env = { ...process.env, ABS_SCENARIO: name, FT50_DATA_DIR: dir,
     FT50_ABS_PACE_MS: '150', FT50_ABS_ELS_PACE_MS: '250', FT50_ABS_SCOPUS_PACE_MS: '250', FT50_ABS_SPR_PACE_MS: '250' };
   // A clean credential slate per scenario: only what the scenario sets.
   for (const k of ['ELSEVIER_API_KEY', 'ELSEVIER_INST_TOKEN', 'SPRINGER_API_KEY', 'S2_API_KEY', 'FT50_ABS_SCOPUS', 'FT50_ABS_S2',
-    'FT50_ABS_SCOPUS_FORM', 'FT50_ABS_BUDGET_MS', 'FT50_ABS_MISS_TTL_DAYS']) delete env[k];
+    'FT50_ABS_SCOPUS_FORM', 'FT50_ABS_BUDGET_MS', 'FT50_ABS_MISS_TTL_DAYS', 'FT50_ABS_CHUNK_BYTES']) delete env[k];
   Object.assign(env, {
     'token': { ELSEVIER_API_KEY: 'key-abc', ELSEVIER_INST_TOKEN: 'tok-xyz' },
     'scopus-refused': { ELSEVIER_API_KEY: 'key-abc', ELSEVIER_INST_TOKEN: 'tok-xyz' },
@@ -638,6 +698,9 @@ for (const name of SCENARIOS) {
     'openalex-429': { ELSEVIER_API_KEY: 'key-abc', ELSEVIER_INST_TOKEN: 'tok-xyz' },
     'heal-restamp': { ELSEVIER_API_KEY: 'key-abc', ELSEVIER_INST_TOKEN: 'tok-xyz' },
     'scopus-mixed': { ELSEVIER_API_KEY: 'key-abc', ELSEVIER_INST_TOKEN: 'tok-xyz' },
+    // 4 KiB: enough that 40 bulky entries need several parts, small enough
+    // that the test does not write tens of megabytes to prove it.
+    'chunked': { FT50_ABS_CHUNK_BYTES: '4096' },
   }[name]);
   const r = spawnSync(process.execPath, [SELF], { env, encoding: 'utf8', timeout: 120000 });
   const lines = `${r.stdout || ''}${r.stderr || ''}`.split('\n').filter(l => /^\s+[✓✗]|scenario/.test(l));

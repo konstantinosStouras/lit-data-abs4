@@ -30,6 +30,7 @@ import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { junkAbstract } from './_entities.mjs';
+import { readChunkedJsonSync, writeChunkedJson } from './_chunked-json.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -108,9 +109,12 @@ if (existsSync(recentPath)) {
 
 // Heal the API cache: a junk entry would re-apply on the next backfill run,
 // so re-stamp it a TTL miss (the guarded legs then re-resolve it for real).
+// It is CHUNKED (_chunked-json.mjs), so it is read and rewritten through every
+// part: reading part 1 alone would leave the junk in the others untouched, and
+// writing one file would drop them.
 const apiCachePath = join(DIR, '_api-abstracts.json');
 if (existsSync(apiCachePath)) {
-  const raw = JSON.parse(readFileSync(apiCachePath, 'utf8'));
+  const raw = readChunkedJsonSync(apiCachePath, {});
   const map = raw.map || raw;
   let n = 0;
   for (const [doi, rec] of Object.entries(map)) {
@@ -119,7 +123,7 @@ if (existsSync(apiCachePath)) {
     if (ctx && junkAbstract(rec.a, ctx)) { map[doi] = { none: 1, t: day() }; n++; }
   }
   if (n) {
-    if (!DRY) writeFileSync(apiCachePath, JSON.stringify(map), 'utf8');
+    if (!DRY) await writeChunkedJson(apiCachePath, map);
     console.log(`  _api-abstracts.json: ${n} junk entr${n === 1 ? 'y' : 'ies'} re-stamped as misses`);
   }
 }

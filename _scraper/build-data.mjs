@@ -158,6 +158,7 @@ const SELECT = [
 import { cleanText as stripJats, trimTrailingSeparators, titleText,
   affilName, affilParts, affilList, stripPageFurniture, junkAbstract, stripHighlights } from './_entities.mjs';
 import { betterAbstract } from './abstracts-ci.mjs';
+import { readChunkedJson } from './_chunked-json.mjs';
 export { stripJats, trimTrailingSeparators, titleText, affilName, affilParts, affilList, stripPageFurniture, junkAbstract, stripHighlights };
 
 function yearOf(item) {
@@ -1212,7 +1213,11 @@ export async function refreshCitations(allPapers, cache, opts = {}) {
 // in the daily build so a rebuild can never regress a backfilled abstract.
 // Mirrors the FT50 pipeline's applyAbstractCaches (keep in sync).
 async function applyAbstractCaches(allPapers) {
-  const raw = await loadJsonIfExists(join(DATA_DIR, '_api-abstracts.json'), {});
+  // readChunkedJson, not loadJsonIfExists: _api-abstracts.json is written in
+  // PARTS once it outgrows the chunk cap (abstracts-ci.mjs), and reading only
+  // the first part would silently drop every abstract in the others. A
+  // single-file cache is just the one-part case.
+  const raw = await readChunkedJson(join(DATA_DIR, '_api-abstracts.json'), {});
   const map = raw.map || raw;
   let up = 0;
   for (const row of allPapers) {

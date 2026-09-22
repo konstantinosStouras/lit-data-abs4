@@ -95,6 +95,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { cleanText, stripPageFurniture, junkAbstract, stripHighlights } from './_entities.mjs';
+import { readChunkedJson, writeChunkedJson, chunkPartPath, CHUNK_CAP_BYTES } from './_chunked-json.mjs';
 
 // junkAbstract (user report 2026-08): OpenAlex/S2 mirror the publisher's
 // Crossref deposit, so for a paper whose deposit is an editorial plain-language
@@ -125,6 +126,10 @@ const BUDGET_MS = parseInt(process.env.FT50_ABS_BUDGET_MS || '', 10) || 40 * 60 
 const PACE_MS = Math.max(150, parseInt(process.env.FT50_ABS_PACE_MS || '', 10) || 300);
 const MISS_TTL_DAYS = parseInt(process.env.FT50_ABS_MISS_TTL_DAYS || '', 10) || 45;
 const USE_S2 = process.env.FT50_ABS_S2 !== '0';
+// The cache's per-part byte cap. The default (48 MiB) is what keeps a part
+// under GitHub's hard 100 MiB push limit; the override exists so the selftest
+// can force a split without generating tens of megabytes.
+const CHUNK_BYTES = parseInt(process.env.FT50_ABS_CHUNK_BYTES || '', 10) || CHUNK_CAP_BYTES;
 // A credential is used as a request HEADER, so it must be a header-safe value:
 // printable ASCII, no whitespace or control character inside. A secret pasted
 // with an embedded line break would otherwise reach undici's header validator,
@@ -418,10 +423,17 @@ export async function main() {
     return i >= 0 ? String(args[i + 1] || '') : '';
   })();
 
-  const rawCache = await loadJson(CACHE_PATH, {});
+  // The cache is CHUNKED (see _chunked-json.mjs): a cache that outgrew
+  // GitHub's hard 100 MiB push limit is what stopped lit-data-abs3-omecon
+  // committing anything for three runs (102.41 MB, rejected by the
+  // pre-receive hook while every run did its work and threw it away). Both
+  // sides read through readChunkedJson, so a single-file cache written before
+  // this — and a merge copy of one — still loads exactly as it did.
+  const rawCache = await readChunkedJson(CACHE_PATH, {});
   const cache = rawCache.map || rawCache;
   if (MERGE) {
-    const took = mergeAbsCache(cache, (await loadJson(MERGE, {})).map || await loadJson(MERGE, {}));
+    const rawMerge = await readChunkedJson(MERGE, {});
+    const took = mergeAbsCache(cache, rawMerge.map || rawMerge);
     console.log(`  merge-cache: took ${took} entries from ${MERGE}`);
   }
 
@@ -442,10 +454,13 @@ export async function main() {
     if (healed) console.log(`  healed ${healed} furniture/highlights-contaminated cached abstracts`);
   }
 
+  // Written in parts, each well under the 100 MiB push limit; a shrinking
+  // rewrite deletes the leftovers, so a part can never resurrect old entries.
+  let cacheParts = 1;
   async function saveCache() {
     const sorted = {};
     for (const k of Object.keys(cache).sort()) sorted[k] = cache[k];
-    await awrite(CACHE_PATH, JSON.stringify(sorted));
+    cacheParts = (await writeChunkedJson(CACHE_PATH, sorted, CHUNK_BYTES)).length;
   }
 
   async function applyToPapers() {
@@ -792,7 +807,7 @@ export async function main() {
 
   await saveCache();
   const withA = Object.values(cache).filter(v => v && v.a).length;
-  console.log(`\n✓ Wrote ${CACHE_PATH}`);
+  console.log(`\n✓ Wrote ${CACHE_PATH}` + (cacheParts > 1 ? ` (+ ${cacheParts - 1} more part${cacheParts > 2 ? 's' : ''}, through ${chunkPartPath(CACHE_PATH, cacheParts)})` : ''));
   console.log(`  This run: ${checked} DOIs checked, ${found} abstracts found.`);
   if (SPR_KEY && (sprStats.found + sprStats.empty + sprStats.other)) {
     console.log(`  Springer leg: ${sprStats.found} found, ${sprStats.empty} no-abstract, ${sprStats.other} other.`);
