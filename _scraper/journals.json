@@ -434,5 +434,41 @@
     "abs": "4",
     "aia": true,
     "addedBy": "abs-2024-sync (journalranking.org AJG2024)"
+  },
+  {
+    "key": "jpsp",
+    "name": "Journal of Personality and Social Psychology",
+    "short": "JPSP",
+    "issns": [
+      "0022-3514",
+      "1939-1315"
+    ],
+    "publisher": "American Psychological Association",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jesp",
+    "name": "Journal of Experimental Social Psychology",
+    "short": "JESP",
+    "issns": [
+      "0022-1031",
+      "1096-0465"
+    ],
+    "publisher": "Elsevier",
+    "abs": "4",
+    "aia": true
+  },
+  {
+    "key": "jepa",
+    "name": "Journal of Experimental Psychology: Applied",
+    "short": "JEP: Applied",
+    "issns": [
+      "1076-898X",
+      "1939-2192"
+    ],
+    "publisher": "American Psychological Association",
+    "abs": "4",
+    "aia": true
   }
 ]
